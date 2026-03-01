@@ -20,11 +20,11 @@ class DockTilePlugin: NSObject, NSDockTilePlugIn {
 
     private var iconChangeObserver: Any?
 
-    /// The path to the Ghostty.app, determined based on the bundle path of this plugin.
+    /// The path to the host .app bundle, determined based on the bundle path of this plugin.
     var ghosttyAppPath: String {
         var url = pluginBundle.bundleURL
-        // Remove "/Contents/PlugIns/DockTilePlugIn.bundle" from the bundle URL to reach Ghostty.app.
-        while url.lastPathComponent != "Ghostty.app", !url.lastPathComponent.isEmpty {
+        // Walk up from "*.app/Contents/PlugIns/DockTilePlugin.plugin" to reach the .app bundle.
+        while url.pathExtension != "app", url.path != "/" {
             url.deleteLastPathComponent()
         }
         return url.path
