@@ -189,7 +189,8 @@ struct WorktrunkSidebarView: View {
             if store.sidebarListMode == .nestedByRepo, sidebarState.expandedRepoIDs.isEmpty {
                 sidebarState.applyExpandedRepoIDs(
                     Set(store.sidebarSnapshot.repositories.map(\.id)),
-                    listMode: store.sidebarListMode
+                    listMode: store.sidebarListMode,
+                    alwaysVisibleWorktreePaths: currentAlwaysVisibleWorktreePaths()
                 )
             }
             clearSelectionIfMainInFlatMode()
@@ -311,6 +312,13 @@ struct WorktrunkSidebarView: View {
         return nil
     }
 
+    private func currentAlwaysVisibleWorktreePaths() -> Set<String> {
+        guard sidebarTabsEnabled else { return [] }
+        guard store.sidebarListMode == .nestedByRepo else { return [] }
+        let tabRoots = Set(openTabsModel.tabs.compactMap(\.worktreeRootPath).map(standardizedPath))
+        return tabRoots.intersection(store.sidebarWorktreePaths)
+    }
+
     @ViewBuilder
     private func sidebarTabsList(
         snapshot: WorktrunkStore.SidebarSnapshot,
@@ -327,6 +335,7 @@ struct WorktrunkSidebarView: View {
                 return (key, item.tab.windowNumber)
             }
         )
+        let alwaysVisibleWorktreePaths = Set(windowNumberByWorktreePath.keys)
         let moveBeforePreservingScroll: (Int, Int) -> Void = { moving, target in
             let scrollY = sidebarScrollPreserver.captureScrollY()
             moveNativeTabBefore(moving, target)
@@ -359,6 +368,7 @@ struct WorktrunkSidebarView: View {
                 openWorktreeAgent: openWorktreeAgent,
                 defaultAction: defaultAction,
                 availableAgents: availableAgents,
+                alwaysVisibleWorktreePaths: alwaysVisibleWorktreePaths,
                   focusNativeTab: focusNativeTab,
                   moveBefore: moveBeforePreservingScroll,
                   moveAfter: moveAfterPreservingScroll,
@@ -414,7 +424,11 @@ struct WorktrunkSidebarView: View {
                         } else {
                             next.remove(repo.id)
                         }
-                        sidebarState.applyExpandedRepoIDs(next, listMode: store.sidebarListMode)
+                        sidebarState.applyExpandedRepoIDs(
+                            next,
+                            listMode: store.sidebarListMode,
+                            alwaysVisibleWorktreePaths: excludingWorktreePaths
+                        )
                     }
                 )
             ) {
@@ -586,7 +600,11 @@ struct WorktrunkSidebarView: View {
                     } else {
                         next.remove(wt.path)
                     }
-                    sidebarState.applyExpandedWorktreePaths(next, listMode: store.sidebarListMode)
+                    sidebarState.applyExpandedWorktreePaths(
+                        next,
+                        listMode: store.sidebarListMode,
+                        alwaysVisibleWorktreePaths: currentAlwaysVisibleWorktreePaths()
+                    )
                 }
             )
         ) {
@@ -852,6 +870,7 @@ private struct WorktreeTabDisclosureGroup: View {
     let openWorktreeAgent: (String, WorktrunkAgent) -> Void
     let defaultAction: WorktrunkDefaultAction
     let availableAgents: [WorktrunkAgent]
+    let alwaysVisibleWorktreePaths: Set<String>
     let focusNativeTab: (Int) -> Void
     let moveBefore: (Int, Int) -> Void
     let moveAfter: (Int, Int) -> Void
@@ -868,7 +887,11 @@ private struct WorktreeTabDisclosureGroup: View {
                     } else {
                         next.remove(worktree.path)
                     }
-                    sidebarState.applyExpandedWorktreePaths(next, listMode: store.sidebarListMode)
+                    sidebarState.applyExpandedWorktreePaths(
+                        next,
+                        listMode: store.sidebarListMode,
+                        alwaysVisibleWorktreePaths: alwaysVisibleWorktreePaths
+                    )
                 }
             )
         ) {
