@@ -59,16 +59,14 @@ struct WorktrunkSidebarView: View {
 
                 Spacer(minLength: 0)
 
-                if !sidebarTabsEnabled {
-                    Button {
-                        toggleSidebarListMode()
-                    } label: {
-                        Image(systemName: store.sidebarListMode == .flatWorktrees ? "list.bullet.indent" : "list.bullet")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help(store.sidebarListMode == .flatWorktrees ? "Switch to nested list" : "Switch to flat list")
+                Button {
+                    toggleSidebarListMode()
+                } label: {
+                    Image(systemName: store.sidebarListMode == .flatWorktrees ? "list.bullet.indent" : "list.bullet")
+                        .foregroundStyle(.secondary)
                 }
+                .buttonStyle(.plain)
+                .help(store.sidebarListMode == .flatWorktrees ? "Switch to nested list" : "Switch to flat list")
 
                 Menu {
                     ForEach(WorktreeSortOrder.allCases, id: \.self) { order in
@@ -187,19 +185,12 @@ struct WorktrunkSidebarView: View {
         .onChange(of: store.sidebarListMode) { _ in
             clearSelectionIfMainInFlatMode()
         }
-        .onChange(of: sidebarTabsEnabled) { enabled in
-            if enabled {
-                forceFlatModeIfNeeded()
-            }
-        }
         .onAppear {
-            if sidebarTabsEnabled {
-                forceFlatModeIfNeeded()
-            }
             if store.sidebarListMode == .nestedByRepo, sidebarState.expandedRepoIDs.isEmpty {
                 sidebarState.applyExpandedRepoIDs(
                     Set(store.sidebarSnapshot.repositories.map(\.id)),
-                    listMode: store.sidebarListMode
+                    listMode: store.sidebarListMode,
+                    alwaysVisibleWorktreePaths: currentAlwaysVisibleWorktreePaths()
                 )
             }
             clearSelectionIfMainInFlatMode()
@@ -297,7 +288,7 @@ struct WorktrunkSidebarView: View {
             if store.sidebarListMode == .flatWorktrees {
                 flatWorktreeList(snapshot: snapshot, excludingWorktreePaths: topWorktreePaths)
             } else {
-                nestedRepoList(snapshot: snapshot)
+                nestedRepoList(snapshot: snapshot, excludingWorktreePaths: topWorktreePaths)
             }
         }
         .background(SidebarListScrollFinder(preserver: sidebarScrollPreserver))
@@ -321,14 +312,11 @@ struct WorktrunkSidebarView: View {
         return nil
     }
 
-    private func forceFlatModeIfNeeded() {
-        if store.sidebarListMode != .flatWorktrees {
-            store.sidebarListMode = .flatWorktrees
-        }
-        if store.worktreeSortOrder != .recentActivity {
-            store.worktreeSortOrder = .recentActivity
-        }
-        clearSelectionIfMainInFlatMode()
+    private func currentAlwaysVisibleWorktreePaths() -> Set<String> {
+        guard sidebarTabsEnabled else { return [] }
+        guard store.sidebarListMode == .nestedByRepo else { return [] }
+        let tabRoots = Set(openTabsModel.tabs.compactMap(\.worktreeRootPath).map(standardizedPath))
+        return tabRoots.intersection(store.sidebarWorktreePaths)
     }
 
     @ViewBuilder
@@ -347,6 +335,7 @@ struct WorktrunkSidebarView: View {
                 return (key, item.tab.windowNumber)
             }
         )
+        let alwaysVisibleWorktreePaths = Set(windowNumberByWorktreePath.keys)
         let moveBeforePreservingScroll: (Int, Int) -> Void = { moving, target in
             let scrollY = sidebarScrollPreserver.captureScrollY()
             moveNativeTabBefore(moving, target)
@@ -379,6 +368,7 @@ struct WorktrunkSidebarView: View {
                 openWorktreeAgent: openWorktreeAgent,
                 defaultAction: defaultAction,
                 availableAgents: availableAgents,
+                alwaysVisibleWorktreePaths: alwaysVisibleWorktreePaths,
                   focusNativeTab: focusNativeTab,
                   moveBefore: moveBeforePreservingScroll,
                   moveAfter: moveAfterPreservingScroll,
@@ -419,7 +409,10 @@ struct WorktrunkSidebarView: View {
     }
 
     @ViewBuilder
-    private func nestedRepoList(snapshot: WorktrunkStore.SidebarSnapshot) -> some View {
+    private func nestedRepoList(
+        snapshot: WorktrunkStore.SidebarSnapshot,
+        excludingWorktreePaths: Set<String>
+    ) -> some View {
         ForEach(snapshot.repositories) { repo in
             DisclosureGroup(
                 isExpanded: Binding(
@@ -431,7 +424,11 @@ struct WorktrunkSidebarView: View {
                         } else {
                             next.remove(repo.id)
                         }
-                        sidebarState.applyExpandedRepoIDs(next, listMode: store.sidebarListMode)
+                        sidebarState.applyExpandedRepoIDs(
+                            next,
+                            listMode: store.sidebarListMode,
+                            alwaysVisibleWorktreePaths: excludingWorktreePaths
+                        )
                     }
                 )
             ) {
@@ -449,7 +446,9 @@ struct WorktrunkSidebarView: View {
                 }
                 .help("Create worktree")
 
-                let worktrees = snapshot.worktreesByRepositoryID[repo.id] ?? []
+                let worktrees = (snapshot.worktreesByRepositoryID[repo.id] ?? []).filter { wt in
+                    !excludingWorktreePaths.contains(standardizedPath(wt.path))
+                }
                 if worktrees.isEmpty {
                     Text("No worktrees")
                         .foregroundStyle(.secondary)
@@ -601,7 +600,11 @@ struct WorktrunkSidebarView: View {
                     } else {
                         next.remove(wt.path)
                     }
-                    sidebarState.applyExpandedWorktreePaths(next, listMode: store.sidebarListMode)
+                    sidebarState.applyExpandedWorktreePaths(
+                        next,
+                        listMode: store.sidebarListMode,
+                        alwaysVisibleWorktreePaths: currentAlwaysVisibleWorktreePaths()
+                    )
                 }
             )
         ) {
@@ -867,6 +870,7 @@ private struct WorktreeTabDisclosureGroup: View {
     let openWorktreeAgent: (String, WorktrunkAgent) -> Void
     let defaultAction: WorktrunkDefaultAction
     let availableAgents: [WorktrunkAgent]
+    let alwaysVisibleWorktreePaths: Set<String>
     let focusNativeTab: (Int) -> Void
     let moveBefore: (Int, Int) -> Void
     let moveAfter: (Int, Int) -> Void
@@ -883,7 +887,11 @@ private struct WorktreeTabDisclosureGroup: View {
                     } else {
                         next.remove(worktree.path)
                     }
-                    sidebarState.applyExpandedWorktreePaths(next, listMode: store.sidebarListMode)
+                    sidebarState.applyExpandedWorktreePaths(
+                        next,
+                        listMode: store.sidebarListMode,
+                        alwaysVisibleWorktreePaths: alwaysVisibleWorktreePaths
+                    )
                 }
             )
         ) {
