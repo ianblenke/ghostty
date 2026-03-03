@@ -17,7 +17,7 @@ jobs:
   skip:
     runs-on: ubuntu-24.04
     outputs:
-      # 'true' when all changed files are non-code (e.g. only VOUCHED.td),
+      # 'true' when all changed files are non-code,
       # signaling that all other jobs can be skipped entirely.
       skip: ${{ steps.determine.outputs.skip }}
       # Path-based filters to gate specific linter/formatter jobs.
@@ -38,7 +38,6 @@ jobs:
           filters: |
             code:
               - '**'
-              - '!.github/VOUCHED.td'
       - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
         id: filter_any
         with:
