@@ -186,6 +186,13 @@ enum WorktrunkSidebarListMode: String {
 }
 
 final class WorktrunkStore: ObservableObject {
+    private enum RefreshAllTrigger {
+        case sidebarAppear
+        case repositoryAdded
+        case worktrunkInstalled
+        case manual
+    }
+
     struct Repository: Identifiable, Codable, Hashable {
         var id: UUID
         var path: String
@@ -303,6 +310,10 @@ final class WorktrunkStore: ObservableObject {
     private var sidebarModelRevisionCounter: Int = 0
     private var refreshAllTask: Task<Void, Never>?
     private var refreshAllNeedsRerun: Bool = false
+    private var lastRefreshAllCompletedAt: Date = .distantPast
+    private let sidebarAppearRefreshInterval: TimeInterval = 20
+    private let repoListRefreshConcurrency: Int = 4
+    private let gitTrackingRefreshConcurrency: Int = 8
 
     init() {
         load()
@@ -523,7 +534,7 @@ final class WorktrunkStore: ObservableObject {
         save()
         rebuildSidebarSnapshot()
         bumpSidebarModelRevision()
-        Task { await refreshAll() }
+        Task { await refreshAll(trigger: .repositoryAdded) }
     }
 
     func removeRepository(id: UUID) {
@@ -537,13 +548,23 @@ final class WorktrunkStore: ObservableObject {
     }
 
     func refreshAll() async {
+        await refreshAll(trigger: .manual)
+    }
+
+    func refreshForSidebarAppearIfNeeded() async {
+        await refreshAll(trigger: .sidebarAppear)
+    }
+
+    private func refreshAll(trigger: RefreshAllTrigger) async {
+        if trigger == .sidebarAppear, shouldSkipSidebarAppearRefresh() {
+            return
+        }
+
         if let existing = refreshAllTask {
-            refreshAllNeedsRerun = true
-            await existing.value
-            if refreshAllNeedsRerun {
-                refreshAllNeedsRerun = false
-                await refreshAll()
+            if shouldScheduleRefreshRerun(for: trigger) {
+                refreshAllNeedsRerun = true
             }
+            await existing.value
             return
         }
 
@@ -573,7 +594,24 @@ final class WorktrunkStore: ObservableObject {
             await refreshAllBatchedOnce()
         } while refreshAllNeedsRerun
         await MainActor.run {
+            lastRefreshAllCompletedAt = Date()
             isRefreshing = false
+        }
+    }
+
+    private func shouldSkipSidebarAppearRefresh() -> Bool {
+        if refreshAllTask != nil {
+            return false
+        }
+        return Date().timeIntervalSince(lastRefreshAllCompletedAt) < sidebarAppearRefreshInterval
+    }
+
+    private func shouldScheduleRefreshRerun(for trigger: RefreshAllTrigger) -> Bool {
+        switch trigger {
+        case .sidebarAppear:
+            return false
+        case .repositoryAdded, .worktrunkInstalled, .manual:
+            return true
         }
     }
 
@@ -593,7 +631,12 @@ final class WorktrunkStore: ObservableObject {
         results.reserveCapacity(repoSnapshot.count)
 
         await withTaskGroup(of: RefreshListResult.self) { group in
-            for repo in repoSnapshot {
+            var nextRepoIndex = 0
+
+            func enqueueNextRepo() {
+                guard nextRepoIndex < repoSnapshot.count else { return }
+                let repo = repoSnapshot[nextRepoIndex]
+                nextRepoIndex += 1
                 let previous = previousByRepoID[repo.id] ?? (hadExisting: false, paths: Set<String>())
                 group.addTask { [self] in
                     do {
@@ -620,8 +663,13 @@ final class WorktrunkStore: ObservableObject {
                 }
             }
 
-            for await result in group {
+            for _ in 0..<min(repoListRefreshConcurrency, repoSnapshot.count) {
+                enqueueNextRepo()
+            }
+
+            while let result = await group.next() {
                 results.append(result)
+                enqueueNextRepo()
             }
         }
 
@@ -674,8 +722,9 @@ final class WorktrunkStore: ObservableObject {
             repositories.flatMap { worktreesByRepositoryID[$0.id] ?? [] }
         }
 
-        await refreshGitTracking(for: allWorktrees, removing: allPreviousPaths)
-        await refreshSessions()
+        async let trackingRefresh: Void = refreshGitTracking(for: allWorktrees, removing: allPreviousPaths)
+        async let sessionsRefresh: Void = refreshSessions()
+        _ = await (trackingRefresh, sessionsRefresh)
     }
 
     private func decodeWorktrees(repoID: UUID, data: Data) throws -> [Worktree] {
@@ -814,7 +863,7 @@ final class WorktrunkStore: ObservableObject {
                 errorMessage = nil
                 needsWorktrunkInstall = false
             }
-            await refreshAll()
+            await refreshAll(trigger: .worktrunkInstalled)
             return true
         } catch {
             await MainActor.run {
@@ -997,17 +1046,27 @@ final class WorktrunkStore: ObservableObject {
         var results: [String: GitTracking] = [:]
 
         await withTaskGroup(of: (String, GitTracking?).self) { group in
-            for worktree in worktrees {
+            var nextWorktreeIndex = 0
+
+            func enqueueNextWorktree() {
+                guard nextWorktreeIndex < worktrees.count else { return }
+                let worktree = worktrees[nextWorktreeIndex]
+                nextWorktreeIndex += 1
                 group.addTask { [self] in
                     let tracking = try? await getGitTracking(worktreePath: worktree.path)
                     return (worktree.path, tracking)
                 }
             }
 
-            for await (path, tracking) in group {
+            for _ in 0..<min(gitTrackingRefreshConcurrency, worktrees.count) {
+                enqueueNextWorktree()
+            }
+
+            while let (path, tracking) = await group.next() {
                 if let tracking {
                     results[path] = tracking
                 }
+                enqueueNextWorktree()
             }
         }
 
@@ -1033,6 +1092,9 @@ final class WorktrunkStore: ObservableObject {
         let output = try await runGitStatus(worktreePath: worktreePath)
         if output.isEmpty { return nil }
         var parsed = parseGitStatusOutput(output)
+        if parsed.tracking.totalChangesCount == 0 {
+            return parsed.tracking
+        }
 
         let (unstagedAdds, unstagedDeletes) = (try? await runGitNumstat(
             worktreePath: worktreePath,
