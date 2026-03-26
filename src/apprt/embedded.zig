@@ -44,6 +44,13 @@ const log = std.log.scoped(.embedded_window);
 pub const resourcesDir = internal_os.resourcesDir;
 
 pub const App = struct {
+    /// On Linux, GtkGLArea does not support drawing from a different thread,
+    /// so we must draw from the app thread. The renderer thread sends a
+    /// redraw_surface message to the app mailbox, which routes through
+    /// performAction(.render) to the host's action callback.
+    /// On macOS, Metal handles threaded rendering natively.
+    pub const must_draw_from_app_thread = !builtin.target.os.tag.isDarwin();
+
     /// Because we only expect the embedding API to be used in embedded
     /// environments, the options are extern so that we can expose it
     /// directly to a C callconv and not pay for any translation costs.
