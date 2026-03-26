@@ -174,7 +174,10 @@ pub fn surfaceInit(surface: *apprt.Surface) !void {
             // On Linux, the host has made the GtkGLArea GL context current
             // before creating the surface. Load GLAD from the current context.
             if (comptime builtin.target.os.tag == .linux) {
-                try prepareContext(null);
+                prepareContext(null) catch |err| {
+                    log.err("prepareContext failed for embedded Linux: {}", .{err});
+                    return err;
+                };
             }
             // On macOS, Metal is used — no GLAD needed.
         },
