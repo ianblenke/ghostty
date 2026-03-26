@@ -165,14 +165,18 @@ pub fn surfaceInit(surface: *apprt.Surface) !void {
     switch (apprt.runtime) {
         else => @compileError("unsupported app runtime for OpenGL"),
 
-        // GTK uses global OpenGL context so we load from null.
+        // GTK and embedded-on-Linux use global OpenGL context,
+        // so we load from null (the host has made GL current).
         apprt.gtk,
         => try prepareContext(null),
 
         apprt.embedded => {
-            // TODO(mitchellh): this does nothing today to allow libghostty
-            // to compile for OpenGL targets but libghostty is strictly
-            // broken for rendering on this platforms.
+            // On Linux, the host has made the GtkGLArea GL context current
+            // before creating the surface. Load GLAD from the current context.
+            if (comptime builtin.target.os.tag == .linux) {
+                try prepareContext(null);
+            }
+            // On macOS, Metal is used — no GLAD needed.
         },
     }
 
@@ -209,9 +213,8 @@ pub fn threadEnter(self: *const OpenGL, surface: *apprt.Surface) !void {
         },
 
         apprt.embedded => {
-            // TODO(mitchellh): this does nothing today to allow libghostty
-            // to compile for OpenGL targets but libghostty is strictly
-            // broken for rendering on this platforms.
+            // On Linux, the renderer thread doesn't touch GL directly
+            // (must_draw_from_app_thread = true). Nothing to do here.
         },
     }
 }
