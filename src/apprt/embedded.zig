@@ -8,7 +8,25 @@ const std = @import("std");
 const builtin = @import("builtin");
 const assert = @import("../quirks.zig").inlineAssert;
 const Allocator = std.mem.Allocator;
-const objc = @import("objc");
+const objc = if (builtin.target.os.tag.isDarwin()) @import("objc") else struct {
+    // Stub for non-Darwin platforms — the objc module is only needed for
+    // macOS/iOS platform types. All objc usage is behind comptime Darwin
+    // checks, so this stub is never instantiated at runtime.
+    pub const Object = struct {
+        pub fn fromId(_: ?*anyopaque) Object {
+            unreachable;
+        }
+        pub fn msgSend(_: Object, comptime _: type, comptime _: anytype, _: anytype) void {
+            unreachable;
+        }
+    };
+    pub const c = struct {
+        pub const id = ?*anyopaque;
+    };
+    pub fn sel(comptime _: anytype) void {
+        unreachable;
+    }
+};
 const apprt = @import("../apprt.zig");
 const font = @import("../font/main.zig");
 const input = @import("../input.zig");
