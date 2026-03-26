@@ -342,6 +342,7 @@ pub const App = struct {
 pub const Platform = union(PlatformTag) {
     macos: MacOS,
     ios: IOS,
+    linux: Linux,
 
     // If our build target for libghostty is not darwin then we do
     // not include macos support at all.
@@ -355,6 +356,17 @@ pub const Platform = union(PlatformTag) {
         uiview: objc.Object,
     } else void;
 
+    /// Linux platform configuration for embedded mode.
+    /// The gl_area is a pointer to a GtkGLArea widget that the host
+    /// application creates and manages. Ghostty will use it for OpenGL
+    /// rendering of the terminal surface.
+    pub const Linux = if (builtin.target.os.tag == .linux) struct {
+        /// Pointer to a GtkGLArea widget managed by the host application.
+        gl_area: *anyopaque,
+        /// Pointer to the GtkWidget for the GL area (for event attachment).
+        widget: *anyopaque,
+    } else void;
+
     // The C ABI compatible version of this union. The tag is expected
     // to be stored elsewhere.
     pub const C = extern union {
@@ -364,6 +376,11 @@ pub const Platform = union(PlatformTag) {
 
         ios: extern struct {
             uiview: ?*anyopaque,
+        },
+
+        gtk: extern struct {
+            gl_area: ?*anyopaque,
+            widget: ?*anyopaque,
         },
     };
 
@@ -384,6 +401,15 @@ pub const Platform = union(PlatformTag) {
                     break :ios error.UIViewMustBeSet);
                 break :ios .{ .ios = .{ .uiview = uiview } };
             } else error.UnsupportedPlatform,
+
+            .linux => if (Linux != void) linux: {
+                const config = c_platform.gtk;
+                const gl_area = config.gl_area orelse
+                    break :linux error.UnsupportedPlatform;
+                const widget = config.widget orelse
+                    break :linux error.UnsupportedPlatform;
+                break :linux .{ .linux = .{ .gl_area = gl_area, .widget = widget } };
+            } else error.UnsupportedPlatform,
         };
     }
 };
@@ -394,6 +420,7 @@ pub const PlatformTag = enum(c_int) {
 
     macos = 1,
     ios = 2,
+    linux = 3,
 };
 
 pub const EnvVar = extern struct {
