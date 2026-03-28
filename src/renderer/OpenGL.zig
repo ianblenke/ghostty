@@ -243,16 +243,16 @@ pub fn threadExit(self: *const OpenGL) void {
 pub fn displayRealized(self: *const OpenGL) void {
     _ = self;
 
-    switch (apprt.runtime) {
-        apprt.gtk => prepareContext(null) catch |err| {
-            log.warn(
-                "Error preparing GL context in displayRealized, err={}",
-                .{err},
-            );
-        },
-
-        else => @compileError("only GTK should be calling displayRealized"),
-    }
+    // Reload GLAD from the current GL context. For GTK apprt, the
+    // context is made current before calling this. For embedded apprt
+    // (e.g. cmux on Linux), the host app makes the GtkGLArea context
+    // current before calling ghostty_surface_reinit_renderer.
+    prepareContext(null) catch |err| {
+        log.warn(
+            "Error preparing GL context in displayRealized, err={}",
+            .{err},
+        );
+    };
 }
 
 /// Actions taken before doing anything in `drawFrame`.

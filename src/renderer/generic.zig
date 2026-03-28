@@ -1981,9 +1981,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.draw_mutex.lock();
             defer self.draw_mutex.unlock();
 
-            // We only actually need the padding from this,
-            // everything else is derived elsewhere.
+            // Update padding and screen size so that drawFrame's
+            // size_changed detection matches the new cell buffer grid.
             self.size.padding = size.padding;
+            self.size.screen = size.screen;
+            self.size.cell = size.cell;
 
             self.updateScreenSizeUniforms();
 

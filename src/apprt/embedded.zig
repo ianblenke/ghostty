@@ -1789,6 +1789,21 @@ pub const CAPI = struct {
         surface.draw();
     }
 
+    /// Reinitialize the renderer's GL state without destroying the PTY/IO.
+    /// Call this when the host's GL context has been invalidated or the
+    /// framebuffer has been resized externally (e.g. GTK4 resizing a hidden
+    /// GtkGLArea in a GtkNotebook). The host must make the GL context
+    /// current before calling this function.
+    /// Returns true on success, false on error.
+    export fn ghostty_surface_reinit_renderer(surface: *Surface) bool {
+        surface.core_surface.renderer.displayUnrealized();
+        surface.core_surface.renderer.displayRealized() catch |err| {
+            log.err("error reinitializing renderer: {}", .{err});
+            return false;
+        };
+        return true;
+    }
+
     /// Update the size of a surface. This will trigger resize notifications
     /// to the pty and the renderer.
     export fn ghostty_surface_set_size(surface: *Surface, w: u32, h: u32) void {
