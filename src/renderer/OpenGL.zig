@@ -45,6 +45,11 @@ blending: configpkg.Config.AlphaBlending,
 /// The most recently presented target, in case we need to present it again.
 last_target: ?Target = null,
 
+/// Optional draw framebuffer for offscreen rendering. When set, present()
+/// blits to this FBO instead of the current draw framebuffer (default).
+/// Used by embedders to capture surface output for compositing (e.g. split panes).
+draw_framebuffer: ?gl.c.GLuint = null,
+
 /// NOTE: This is an error{}!OpenGL instead of just OpenGL for parity with
 ///       Metal, since it needs to be fallible so does this, even though it
 ///       can't actually fail.
@@ -312,6 +317,18 @@ pub fn present(self: *OpenGL, target: Target) !void {
     try gl.disable(gl.c.GL_FRAMEBUFFER_SRGB);
     defer gl.enable(gl.c.GL_FRAMEBUFFER_SRGB) catch |err| {
         log.err("Error re-enabling GL_FRAMEBUFFER_SRGB, err={}", .{err});
+    };
+
+    // If the embedder specified a draw framebuffer, bind it for the blit.
+    // Save and restore the previous draw framebuffer binding.
+    var saved_draw_fbo: gl.c.GLint = 0;
+    const has_custom_fbo = self.draw_framebuffer != null;
+    if (has_custom_fbo) {
+        gl.glad.context.GetIntegerv.?(gl.c.GL_DRAW_FRAMEBUFFER_BINDING, &saved_draw_fbo);
+        gl.glad.context.BindFramebuffer.?(gl.c.GL_DRAW_FRAMEBUFFER, self.draw_framebuffer.?);
+    }
+    defer if (has_custom_fbo) {
+        gl.glad.context.BindFramebuffer.?(gl.c.GL_DRAW_FRAMEBUFFER, @intCast(saved_draw_fbo));
     };
 
     // Bind the target for reading.

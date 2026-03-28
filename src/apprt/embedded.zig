@@ -1851,6 +1851,14 @@ pub const CAPI = struct {
         surface.occlusionCallback(visible);
     }
 
+    /// Set the draw framebuffer for offscreen rendering. When set to a non-zero
+    /// FBO, surface_draw will blit its output to this FBO instead of the default
+    /// framebuffer. Set to 0 to restore default behavior.
+    /// Used by embedders for split-pane compositing.
+    export fn ghostty_surface_set_draw_framebuffer(surface: *Surface, fbo: c_uint) void {
+        surface.core_surface.renderer.api.draw_framebuffer = if (fbo == 0) null else fbo;
+    }
+
     /// Filter the mods if necessary. This handles settings such as
     /// `macos-option-as-alt`. The filtered mods should be used for
     /// key translation but should NOT be sent back via the `_key`
