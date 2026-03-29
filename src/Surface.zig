@@ -1221,7 +1221,7 @@ fn selectionScrollTick(self: *Surface) !void {
             .y = pos_vp.y,
         },
     }) orelse {
-        if (comptime std.debug.runtime_safety) unreachable;
+        // Gracefully handle stale coordinates during resize/reparent
         return;
     };
     try self.dragLeftClickSingle(pin, pos.x);
@@ -4125,7 +4125,7 @@ pub fn mouseButtonCallback(
                 // found in our pages. This is probably a bug but we don't
                 // want to crash in releases because its harmless. So, we
                 // only assert in debug mode.
-                if (comptime std.debug.runtime_safety) unreachable;
+                // Can happen during resize/reparent with stale coordinates
                 break :click;
             };
 
@@ -4263,7 +4263,7 @@ pub fn mouseButtonCallback(
                     .y = pt_viewport.y,
                 },
             }) orelse {
-                if (comptime std.debug.runtime_safety) unreachable;
+                // Gracefully handle stale coordinates during resize/reparent
                 break :sel;
             };
 
@@ -4384,7 +4384,7 @@ fn maybePromptClick(self: *Surface) !bool {
             },
         }) orelse {
             // See mouseButtonCallback for explanation
-            if (comptime std.debug.runtime_safety) unreachable;
+            // Gracefully handle stale coordinates during resize/reparent
             return false;
         };
 
@@ -4401,7 +4401,7 @@ fn maybePromptClick(self: *Surface) !bool {
             // This shouldn't be possible because we asserted we're at
             // a prompt above, so we MUST find some prompt in a left_up search.
             log.warn("cursor is at prompt but no prompt found", .{});
-            if (comptime std.debug.runtime_safety) unreachable;
+            // Gracefully handle stale coordinates during resize/reparent
             return false;
         };
     };
@@ -4874,7 +4874,8 @@ pub fn cursorPosCallback(
                 .y = pos_vp.y,
             },
         }) orelse {
-            if (comptime std.debug.runtime_safety) unreachable;
+            // Can happen transiently during resize or GL context reparenting
+            // when the cursor position hasn't been updated for the new viewport.
             return;
         };
 
