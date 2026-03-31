@@ -28,6 +28,7 @@ const Surface = @import("surface.zig").Surface;
 const Tab = @import("tab.zig").Tab;
 const DebugWarning = @import("debug_warning.zig").DebugWarning;
 const CommandPalette = @import("command_palette.zig").CommandPalette;
+const WorktrunkSidebar = @import("worktrunk_sidebar.zig").WorktrunkSidebar;
 const WeakRef = @import("../weak_ref.zig").WeakRef;
 
 const log = std.log.scoped(.gtk_ghostty_window);
@@ -213,6 +214,25 @@ pub const Window = extern struct {
                 },
             );
         };
+
+        pub const @"worktrunk-sidebar-visible" = struct {
+            pub const name = "worktrunk-sidebar-visible";
+            const impl = gobject.ext.defineProperty(
+                name,
+                Self,
+                bool,
+                .{
+                    .default = false,
+                    .accessor = gobject.ext.typedAccessor(
+                        Self,
+                        bool,
+                        .{
+                            .getter = Self.getWorktrunkSidebarVisible,
+                        },
+                    ),
+                },
+            );
+        };
     };
 
     const Private = struct {
@@ -262,6 +282,8 @@ pub const Window = extern struct {
         tab_view: *adw.TabView,
         toolbar: *adw.ToolbarView,
         toast_overlay: *adw.ToastOverlay,
+        worktrunk_paned: *gtk.Paned,
+        sidebar: *WorktrunkSidebar,
 
         pub var offset: c_int = 0;
     };
@@ -325,6 +347,22 @@ pub const Window = extern struct {
         // Initialize our actions
         self.initActionMap();
 
+        // Connect sidebar signals
+        _ = WorktrunkSidebar.signals.@"open-directory".impl.connect(
+            priv.sidebar,
+            *Self,
+            &onSidebarOpenDirectory,
+            self,
+            .{},
+        );
+        _ = WorktrunkSidebar.signals.@"open-session".impl.connect(
+            priv.sidebar,
+            *Self,
+            &onSidebarOpenSession,
+            self,
+            .{},
+        );
+
         // Start states based on config.
         if (config.maximize) self.as(gtk.Window).maximize();
         if (config.fullscreen != .false) self.as(gtk.Window).fullscreen();
@@ -374,6 +412,7 @@ pub const Window = extern struct {
             // TODO: accept the surface that toggled the command palette
             .init("toggle-command-palette", actionToggleCommandPalette, null),
             .init("toggle-inspector", actionToggleInspector, null),
+            .init("toggle-worktrunk-sidebar", actionToggleWorktrunkSidebar, null),
         };
 
         ext.actions.add(Self, self, &actions);
@@ -669,6 +708,7 @@ pub const Window = extern struct {
             "tabs-wide",
             "toolbar-style",
             "titlebar-style",
+            "worktrunk-sidebar-visible",
         }) |key| {
             self.as(gobject.Object).notifyByPspec(
                 @field(properties, key).impl.param_spec,
@@ -1053,6 +1093,12 @@ pub const Window = extern struct {
         const priv = self.private();
         const config = if (priv.config) |v| v.get() else return .native;
         return config.@"gtk-titlebar-style";
+    }
+
+    fn getWorktrunkSidebarVisible(self: *Self) bool {
+        const priv = self.private();
+        const config = if (priv.config) |v| v.get() else return false;
+        return config.@"gtk-worktrunk-sidebar";
     }
 
     fn propConfig(
@@ -2045,6 +2091,49 @@ pub const Window = extern struct {
         self.toggleInspector();
     }
 
+    fn actionToggleWorktrunkSidebar(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Window,
+    ) callconv(.c) void {
+        const priv = self.private();
+        const sidebar_widget = priv.sidebar.as(gtk.Widget);
+        const currently_visible = sidebar_widget.getVisible() != 0;
+        sidebar_widget.setVisible(@intFromBool(!currently_visible));
+    }
+
+    fn onSidebarOpenDirectory(
+        _: *WorktrunkSidebar,
+        path: ?[*:0]const u8,
+        self: *Self,
+    ) callconv(.c) void {
+        const dir_path = path orelse return;
+        log.info("opening directory from sidebar: {s}", .{dir_path});
+        self.newTabForWindow(null, .{
+            .working_directory = std.mem.span(dir_path),
+        });
+    }
+
+    fn onSidebarOpenSession(
+        _: *WorktrunkSidebar,
+        session_id: ?[*:0]const u8,
+        working_dir: ?[*:0]const u8,
+        self: *Self,
+    ) callconv(.c) void {
+        const id = session_id orelse return;
+        const dir = working_dir orelse return;
+        log.info("resuming session {s} in {s}", .{ id, dir });
+
+        // Build command: claude --resume <session-id>
+        const alloc = Application.default().allocator();
+        const cmd = std.fmt.allocPrintSentinel(alloc, "claude --resume {s}", .{std.mem.span(id)}, 0) catch return;
+
+        self.newTabForWindow(null, .{
+            .working_directory = std.mem.span(dir),
+            .command = .{ .shell = cmd },
+        });
+    }
+
     const C = Common(Self, Private);
     pub const as = C.as;
     pub const ref = C.ref;
@@ -2061,6 +2150,7 @@ pub const Window = extern struct {
             gobject.ext.ensureType(SplitTree);
             gobject.ext.ensureType(Surface);
             gobject.ext.ensureType(Tab);
+            gobject.ext.ensureType(WorktrunkSidebar);
             gtk.Widget.Class.setTemplateFromResource(
                 class.as(gtk.Widget.Class),
                 comptime gresource.blueprint(.{
@@ -2082,6 +2172,7 @@ pub const Window = extern struct {
                 properties.@"tabs-wide".impl,
                 properties.@"toolbar-style".impl,
                 properties.@"titlebar-style".impl,
+                properties.@"worktrunk-sidebar-visible".impl,
             });
 
             // Bindings
@@ -2090,6 +2181,8 @@ pub const Window = extern struct {
             class.bindTemplateChildPrivate("tab_view", .{});
             class.bindTemplateChildPrivate("toolbar", .{});
             class.bindTemplateChildPrivate("toast_overlay", .{});
+            class.bindTemplateChildPrivate("worktrunk_paned", .{});
+            class.bindTemplateChildPrivate("sidebar", .{});
 
             // Template Callbacks
             class.bindTemplateCallback("realize", &windowRealize);

@@ -31,7 +31,19 @@ template $GhosttyWindow: Adw.ApplicationWindow {
     show-start-title-buttons: bind template.decorated;
     show-end-title-buttons: bind template.decorated;
 
-    Adw.ToolbarView toolbar {
+    Gtk.Paned worktrunk_paned {
+      orientation: horizontal;
+      resize-start-child: false;
+      shrink-start-child: false;
+      position: 250;
+
+      [start]
+      $GhosttyWorktrunkSidebar sidebar {
+        visible: bind template.worktrunk-sidebar-visible;
+      }
+
+      [end]
+      Adw.ToolbarView toolbar {
       top-bar-style: bind template.toolbar-style;
       bottom-bar-style: bind template.toolbar-style;
 
@@ -169,6 +181,8 @@ template $GhosttyWindow: Adw.ApplicationWindow {
         }
       }
     }
+
+    }
   };
 }
 
@@ -284,6 +298,11 @@ menu main_menu {
     item {
       label: _("Command Palette");
       action: "win.toggle-command-palette";
+    }
+
+    item {
+      label: _("Worktrunk Sidebar");
+      action: "win.toggle-worktrunk-sidebar";
     }
 
     item {

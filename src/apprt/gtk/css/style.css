@@ -181,3 +181,103 @@ label.resize-overlay {
   margin: 0;
   padding: 0;
 }
+
+/* Worktrunk sidebar */
+.worktrunk-sidebar {
+  min-width: 200px;
+}
+
+.worktrunk-sidebar .toolbar {
+  padding: 4px 8px;
+}
+
+.worktrunk-sidebar .heading {
+  font-weight: bold;
+  font-size: 0.9em;
+}
+
+.worktrunk-sidebar .status-indicator {
+  border-radius: 50%;
+  min-width: 8px;
+  min-height: 8px;
+  max-width: 8px;
+  max-height: 8px;
+  margin-top: 6px;
+}
+
+.worktrunk-sidebar .status-indicator.idle {
+  background-color: alpha(currentColor, 0.3);
+}
+
+.worktrunk-sidebar .status-indicator.working {
+  background-color: #f5a623;
+}
+
+.worktrunk-sidebar .status-indicator.permission {
+  background-color: #e74c3c;
+}
+
+.worktrunk-sidebar .status-indicator.review {
+  background-color: #27ae60;
+}
+
+.worktrunk-sidebar .status-indicator.working,
+.worktrunk-sidebar .status-indicator.permission {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* CI status indicator */
+.worktrunk-sidebar .ci-indicator {
+  border-radius: 50%;
+  min-width: 6px;
+  min-height: 6px;
+  max-width: 6px;
+  max-height: 6px;
+  margin-top: 7px;
+}
+
+.worktrunk-sidebar .ci-indicator.ci-passing {
+  background-color: #27ae60;
+}
+
+.worktrunk-sidebar .ci-indicator.ci-failing {
+  background-color: #e74c3c;
+}
+
+.worktrunk-sidebar .ci-indicator.ci-pending {
+  background-color: #f5a623;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.worktrunk-sidebar .ci-indicator.ci-none {
+  background-color: transparent;
+}
+
+/* PR badge */
+.worktrunk-sidebar .pr-badge {
+  font-size: 0.7em;
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-weight: bold;
+}
+
+.worktrunk-sidebar .pr-badge.pr-open {
+  color: #27ae60;
+}
+
+.worktrunk-sidebar .pr-badge.pr-draft {
+  color: alpha(currentColor, 0.5);
+}
+
+.worktrunk-sidebar .pr-badge.pr-merged {
+  color: #8b5cf6;
+}
+
+.worktrunk-sidebar .pr-badge.pr-closed {
+  color: #e74c3c;
+}

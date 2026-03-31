@@ -3620,6 +3620,14 @@ else
 /// which is the old style.
 @"gtk-wide-tabs": bool = true,
 
+/// If `true`, show the Ghostree worktrunk sidebar on the left side of the
+/// window. The sidebar provides navigation for git repositories, worktrees,
+/// and AI agent sessions. Default is `false`.
+///
+/// This is a Ghostree-specific feature and is not available in upstream
+/// Ghostty.
+@"gtk-worktrunk-sidebar": bool = false,
+
 /// Custom CSS files to be loaded.
 ///
 /// GTK CSS documentation can be found at the following links:

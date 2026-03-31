@@ -1600,6 +1600,30 @@ pub const Surface = extern struct {
             }
         }
 
+        // Inject Ghostree agent hook environment variables when sidebar is enabled.
+        {
+            const ghostree_config_obj = app.getConfig();
+            defer ghostree_config_obj.unref();
+            const ghostree_config = ghostree_config_obj.get();
+            if (ghostree_config.@"gtk-worktrunk-sidebar") {
+                const hook_installer = @import("../worktrunk_hook_installer.zig");
+                if (hook_installer.getEventsDir(alloc)) |events_dir| {
+                    try env.put("GHOSTREE_AGENT_EVENTS_DIR", events_dir);
+                    alloc.free(events_dir);
+                } else |_| {}
+                if (hook_installer.getBinDir(alloc)) |bin_dir| {
+                    try env.put("GHOSTREE_AGENT_BIN_DIR", bin_dir);
+                    // Prepend bin dir to PATH
+                    if (env.get("PATH")) |existing_path| {
+                        const new_path = try std.fmt.allocPrint(alloc, "{s}:{s}", .{ bin_dir, existing_path });
+                        try env.put("PATH", new_path);
+                        alloc.free(new_path);
+                    }
+                    alloc.free(bin_dir);
+                } else |_| {}
+            }
+        }
+
         return env;
     }
 

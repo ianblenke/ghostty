@@ -1,0 +1,146 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $GhosttyWorktrunkSidebar: Adw.Bin {
+  styles [
+    "worktrunk-sidebar",
+  ]
+
+  Gtk.Box {
+    orientation: vertical;
+
+    Gtk.Box header {
+      styles [
+        "toolbar",
+      ]
+
+      orientation: horizontal;
+      spacing: 4;
+
+      Gtk.Label {
+        label: _("Worktrunk");
+        hexpand: true;
+        halign: start;
+        margin-start: 8;
+
+        styles [
+          "heading",
+        ]
+      }
+
+      Gtk.Button add_button {
+        icon-name: "list-add-symbolic";
+        tooltip-text: _("Add Repository");
+        clicked => $add_repository();
+        can-focus: false;
+        focus-on-click: false;
+
+        styles [
+          "flat",
+        ]
+      }
+
+      Gtk.Button refresh_button {
+        icon-name: "view-refresh-symbolic";
+        tooltip-text: _("Refresh");
+        clicked => $refresh();
+        can-focus: false;
+        focus-on-click: false;
+
+        styles [
+          "flat",
+        ]
+      }
+
+      Gtk.MenuButton {
+        icon-name: "view-more-symbolic";
+        tooltip-text: _("View Options");
+        menu-model: sidebar_options_menu;
+        can-focus: false;
+        focus-on-click: false;
+
+        styles [
+          "flat",
+        ]
+      }
+    }
+
+    Gtk.ScrolledWindow {
+      hscrollbar-policy: never;
+      vexpand: true;
+
+      Gtk.ListBox list_box {
+        selection-mode: single;
+        row-activated => $row_activated();
+
+        styles [
+          "navigation-sidebar",
+        ]
+      }
+    }
+
+    Gtk.Box placeholder {
+      orientation: vertical;
+      spacing: 12;
+      valign: center;
+      vexpand: true;
+      margin-start: 24;
+      margin-end: 24;
+      margin-top: 24;
+      margin-bottom: 24;
+
+      Gtk.Image {
+        icon-name: "folder-symbolic";
+        pixel-size: 48;
+
+        styles [
+          "dim-label",
+        ]
+      }
+
+      Gtk.Label {
+        label: _("No repositories");
+        wrap: true;
+        justify: center;
+
+        styles [
+          "dim-label",
+        ]
+      }
+
+      Gtk.Label {
+        label: _("Click + to add a repository");
+        wrap: true;
+        justify: center;
+
+        styles [
+          "dim-label",
+          "caption",
+        ]
+      }
+    }
+  }
+}
+
+menu sidebar_options_menu {
+  section {
+    label: _("Sort");
+
+    item {
+      label: _("Alphabetical");
+      action: "sidebar.sort-alpha";
+    }
+
+    item {
+      label: _("Recent Activity");
+      action: "sidebar.sort-recent";
+    }
+  }
+
+  section {
+    item {
+      label: _("Remove All Repositories");
+      action: "sidebar.remove-all";
+    }
+  }
+}
