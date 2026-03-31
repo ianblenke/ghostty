@@ -6,7 +6,9 @@ const glib = @import("glib");
 const gobject = @import("gobject");
 const gtk = @import("gtk");
 
+const gio = @import("gio");
 const gresource = @import("../build/gresource.zig");
+const ext = @import("../ext.zig");
 const Common = @import("../class.zig").Common;
 const Application = @import("application.zig").Application;
 const Config = @import("config.zig").Config;
@@ -109,6 +111,9 @@ pub const WorktrunkSidebar = extern struct {
         // Show the placeholder by default since we have no repos
         priv.list_box.as(gtk.Widget).setVisible(0);
         priv.placeholder.as(gtk.Widget).setVisible(1);
+
+        // Register sidebar actions for the options menu
+        self.initActionMap();
 
         // Initialize store on the next idle tick to avoid blocking init
         _ = glib.idleAdd(onInitStore, self);
@@ -255,7 +260,7 @@ pub const WorktrunkSidebar = extern struct {
         }
     }
 
-    fn createRepoRow(_: *Self, name: []const u8, repo_idx: usize) *gtk.ListBoxRow {
+    fn createRepoRow(self: *Self, name: []const u8, repo_idx: usize) *gtk.ListBoxRow {
         const box = gtk.Box.new(.horizontal, 8);
         box.as(gtk.Widget).setMarginStart(4);
         box.as(gtk.Widget).setMarginEnd(4);
@@ -273,6 +278,24 @@ pub const WorktrunkSidebar = extern struct {
         label.as(gtk.Widget).setHexpand(1);
         label.as(gtk.Widget).addCssClass("heading");
         box.append(label.as(gtk.Widget));
+
+        // Worktree count badge
+        const alloc = Application.default().allocator();
+        const store_ptr = self.private().store;
+        if (store_ptr) |store| {
+            if (repo_idx < store.repositories.items.len) {
+                const wt_count = store.repositories.items[repo_idx].worktrees.items.len;
+                if (wt_count > 0) {
+                    var count_buf: [16]u8 = undefined;
+                    const count_str = std.fmt.bufPrintZ(&count_buf, "{d}", .{wt_count}) catch "0";
+                    const badge = gtk.Label.new(count_str);
+                    badge.as(gtk.Widget).addCssClass("dim-label");
+                    badge.as(gtk.Widget).addCssClass("caption");
+                    box.append(badge.as(gtk.Widget));
+                }
+            }
+        }
+        _ = alloc;
 
         const row = gtk.ListBoxRow.new();
         row.setChild(box.as(gtk.Widget));
@@ -413,19 +436,15 @@ pub const WorktrunkSidebar = extern struct {
     ) callconv(.c) void {
         const priv = self.private();
         const store = priv.store orelse return;
-        const alloc = Application.default().allocator();
 
-        // Get the current working directory as a default
+        // Get the current working directory and walk up to find git root
         var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
         const cwd = std.posix.getcwd(&cwd_buf) catch "/";
+        const repo_path = detectGitRoot(cwd) orelse cwd;
 
-        // Try to detect if cwd is a git repo by checking for .git
-        var git_root = detectGitRoot(cwd) orelse cwd;
-        _ = &git_root;
-
-        _ = store.addRepository(cwd) catch |err| switch (err) {
+        _ = store.addRepository(repo_path) catch |err| switch (err) {
             error.AlreadyExists => {
-                log.info("repository already added: {s}", .{cwd});
+                log.info("repository already added: {s}", .{repo_path});
                 return;
             },
             else => {
@@ -448,7 +467,6 @@ pub const WorktrunkSidebar = extern struct {
         };
 
         self.rebuildList();
-        _ = alloc;
     }
 
     fn refresh(
@@ -514,6 +532,82 @@ pub const WorktrunkSidebar = extern struct {
             const path_z = glib.ext.dupeZ(u8, wt_path);
             signals.@"open-session".impl.emit(self, null, .{ id_z, path_z }, null);
         }
+    }
+
+    //---------------------------------------------------------------
+    // Action Map
+
+    fn initActionMap(self: *Self) void {
+        const actions = [_]ext.actions.Action(Self){
+            .init("sort-alpha", actionSortAlpha, null),
+            .init("sort-recent", actionSortRecent, null),
+            .init("remove-all", actionRemoveAll, null),
+        };
+
+        _ = ext.actions.addAsGroup(Self, self, "sidebar", &actions);
+    }
+
+    fn actionSortAlpha(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Self,
+    ) callconv(.c) void {
+        const priv = self.private();
+        const store = priv.store orelse return;
+
+        // Sort worktrees alphabetically within each repo
+        for (store.repositories.items) |*repo| {
+            std.mem.sort(worktrunk_store.Worktree, repo.worktrees.items, {}, struct {
+                fn lessThan(_: void, a: worktrunk_store.Worktree, b: worktrunk_store.Worktree) bool {
+                    return std.mem.order(u8, a.branch, b.branch) == .lt;
+                }
+            }.lessThan);
+        }
+        self.rebuildList();
+    }
+
+    fn actionSortRecent(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Self,
+    ) callconv(.c) void {
+        const priv = self.private();
+        const store = priv.store orelse return;
+
+        // Sort worktrees with main pinned first, then by session recency
+        for (store.repositories.items) |*repo| {
+            std.mem.sort(worktrunk_store.Worktree, repo.worktrees.items, {}, struct {
+                fn lessThan(_: void, a: worktrunk_store.Worktree, b: worktrunk_store.Worktree) bool {
+                    // Main always first
+                    if (a.is_main and !b.is_main) return true;
+                    if (!a.is_main and b.is_main) return false;
+                    // Current second
+                    if (a.is_current and !b.is_current) return true;
+                    if (!a.is_current and b.is_current) return false;
+                    // Then by most recent session
+                    const a_ts = if (a.sessions.items.len > 0) a.sessions.items[a.sessions.items.len - 1].timestamp else 0;
+                    const b_ts = if (b.sessions.items.len > 0) b.sessions.items[b.sessions.items.len - 1].timestamp else 0;
+                    return a_ts > b_ts;
+                }
+            }.lessThan);
+        }
+        self.rebuildList();
+    }
+
+    fn actionRemoveAll(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Self,
+    ) callconv(.c) void {
+        const priv = self.private();
+        const store = priv.store orelse return;
+
+        // Remove all repos
+        while (store.repositories.items.len > 0) {
+            store.removeRepository(0);
+        }
+        store.persist() catch {};
+        self.rebuildList();
     }
 
     //---------------------------------------------------------------
