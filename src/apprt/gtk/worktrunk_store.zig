@@ -209,8 +209,8 @@ pub const WorktrunkStore = struct {
         }
     }
 
-    /// Scan for Claude sessions and map them to worktrees.
-    pub fn scanClaudeSessions(self: *WorktrunkStore) !void {
+    /// Scan for all agent sessions and map them to worktrees.
+    pub fn scanAllSessions(self: *WorktrunkStore) !void {
         // Clear existing sessions from all worktrees
         for (self.repositories.items) |*repo| {
             for (repo.worktrees.items) |*wt| {
@@ -218,51 +218,47 @@ pub const WorktrunkStore = struct {
             }
         }
 
-        // Scan ~/.claude/projects/
+        // Scan each agent type
+        self.scanAgentSessions(.claude, ".claude/projects") catch {};
+        self.scanAgentSessions(.codex, ".codex/sessions") catch {};
+    }
+
+    fn scanAgentSessions(self: *WorktrunkStore, agent_type: AgentType, rel_path: []const u8) !void {
         const home = std.posix.getenv("HOME") orelse return;
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const claude_projects_path = std.fmt.bufPrint(
-            &path_buf,
-            "{s}/.claude/projects",
-            .{home},
-        ) catch return;
+        const base_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ home, rel_path }) catch return;
 
-        var projects_dir = std.fs.openDirAbsolute(claude_projects_path, .{
-            .iterate = true,
-        }) catch return;
-        defer projects_dir.close();
+        var base_dir = std.fs.openDirAbsolute(base_path, .{ .iterate = true }) catch return;
+        defer base_dir.close();
 
-        var project_iter = projects_dir.iterate();
-        while (project_iter.next() catch null) |project_entry| {
-            if (project_entry.kind != .directory) continue;
+        var dir_iter = base_dir.iterate();
+        while (dir_iter.next() catch null) |entry| {
+            if (entry.kind != .directory) continue;
 
-            var project_dir = projects_dir.openDir(project_entry.name, .{
-                .iterate = true,
-            }) catch continue;
-            defer project_dir.close();
+            var sub_dir = base_dir.openDir(entry.name, .{ .iterate = true }) catch continue;
+            defer sub_dir.close();
 
-            // Each file in the project dir is a session JSONL
-            var session_iter = project_dir.iterate();
-            while (session_iter.next() catch null) |session_entry| {
-                if (session_entry.kind != .file) continue;
-                if (!std.mem.endsWith(u8, session_entry.name, ".jsonl")) continue;
+            var file_iter = sub_dir.iterate();
+            while (file_iter.next() catch null) |file_entry| {
+                if (file_entry.kind != .file) continue;
+                if (!std.mem.endsWith(u8, file_entry.name, ".jsonl")) continue;
 
-                self.processClaudeSession(
-                    project_dir,
-                    session_entry.name,
-                    project_entry.name,
-                ) catch |err| {
-                    log.debug("failed to process session {s}: {}", .{ session_entry.name, err });
+                self.processAgentSession(sub_dir, file_entry.name, entry.name, agent_type) catch |err| {
+                    log.debug("failed to process {s} session {s}: {}", .{ @tagName(agent_type), file_entry.name, err });
                 };
             }
         }
     }
 
-    fn processClaudeSession(
+    /// Legacy name for backward compatibility with sidebar code.
+    pub const scanClaudeSessions = scanAllSessions;
+
+    fn processAgentSession(
         self: *WorktrunkStore,
         project_dir: std.fs.Dir,
         session_filename: []const u8,
         project_name: []const u8,
+        agent_type: AgentType,
     ) !void {
         const file = try project_dir.openFile(session_filename, .{});
         defer file.close();
@@ -296,7 +292,7 @@ pub const WorktrunkStore = struct {
 
                             try wt.sessions.append(self.alloc, .{
                                 .id = owned_id,
-                                .source = .claude,
+                                .source = agent_type,
                                 .worktree_path = owned_wt_path,
                                 .cwd = owned_cwd,
                                 .timestamp = file_mtime,
@@ -384,7 +380,7 @@ pub const WorktrunkStore = struct {
 
                     try wt.sessions.append(self.alloc, .{
                         .id = owned_id,
-                        .source = .claude,
+                        .source = agent_type,
                         .worktree_path = owned_wt_path,
                         .cwd = owned_cwd,
                         .timestamp = file_mtime,

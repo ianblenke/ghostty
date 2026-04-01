@@ -54,6 +54,9 @@ pub fn install(alloc: Allocator) !void {
     try installAgentWrapper(alloc, hooks_dir, bin_dir, "codex");
     try installAgentWrapper(alloc, hooks_dir, bin_dir, "opencode");
     try installAgentWrapper(alloc, hooks_dir, bin_dir, "copilot");
+
+    // Install OpenCode plugin
+    try installOpenCodePlugin(alloc);
 }
 
 fn installNotifyScript(alloc: Allocator, hooks_dir: []const u8, events_dir: []const u8) !void {
@@ -244,6 +247,55 @@ fn installAgentWrapper(alloc: Allocator, hooks_dir: []const u8, bin_dir: []const
     var file = try std.fs.createFileAbsolute(path, .{ .mode = 0o755 });
     defer file.close();
     try file.writeAll(wrapper);
+}
+
+/// Install the OpenCode plugin that hooks into OpenCode's event system.
+fn installOpenCodePlugin(alloc: Allocator) !void {
+    const plugin_dir = try internal_os.xdg.config(alloc, .{ .subdir = "opencode/plugin" });
+    defer alloc.free(plugin_dir);
+
+    std.fs.makeDirAbsolute(plugin_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return,
+    };
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/ghostree-notify.js", .{plugin_dir});
+
+    const plugin =
+        \\// Ghostree opencode plugin v5
+        \\// Monitors OpenCode session status and emits lifecycle events.
+        \\(function() {
+        \\  if (typeof globalThis.__ghostreeOpencodeNotifyPluginV5 !== 'undefined') return;
+        \\  globalThis.__ghostreeOpencodeNotifyPluginV5 = true;
+        \\
+        \\  const eventsDir = process.env.GHOSTREE_AGENT_EVENTS_DIR;
+        \\  if (!eventsDir) return;
+        \\
+        \\  const fs = require('fs');
+        \\  const path = require('path');
+        \\  const eventsFile = path.join(eventsDir, 'agent-events.jsonl');
+        \\
+        \\  function emit(eventType) {
+        \\    const cwd = process.cwd();
+        \\    const ts = new Date().toISOString();
+        \\    const line = JSON.stringify({timestamp: ts, eventType: eventType, cwd: cwd}) + '\n';
+        \\    try { fs.appendFileSync(eventsFile, line); } catch(e) {}
+        \\  }
+        \\
+        \\  // Hook into OpenCode's session events if available
+        \\  if (typeof opencode !== 'undefined' && opencode.on) {
+        \\    opencode.on('session:busy', () => emit('Start'));
+        \\    opencode.on('session:idle', () => emit('Stop'));
+        \\    opencode.on('session:error', () => emit('Stop'));
+        \\    opencode.on('permission', () => emit('PermissionRequest'));
+        \\  }
+        \\})();
+    ;
+
+    var file = std.fs.createFileAbsolute(path, .{ .mode = 0o644 }) catch return;
+    defer file.close();
+    file.writeAll(plugin) catch {};
 }
 
 // ---------------------------------------------------------------

@@ -91,6 +91,9 @@ pub const WorktrunkSidebar = extern struct {
         /// GitHub PR status manager.
         github_mgr: ?*GitHubStatusManager = null,
 
+        /// View mode: nested by repo (default) or flat worktrees.
+        flat_view: bool = false,
+
         /// Whether the store has been initialized.
         store_initialized: bool = false,
 
@@ -98,6 +101,7 @@ pub const WorktrunkSidebar = extern struct {
         list_box: *gtk.ListBox,
         add_button: *gtk.Button,
         refresh_button: *gtk.Button,
+        search_entry: *gtk.SearchEntry,
         placeholder: *gtk.Box,
         header: *gtk.Box,
 
@@ -259,21 +263,37 @@ pub const WorktrunkSidebar = extern struct {
             }
         }
 
-        for (store.repositories.items, 0..) |repo, repo_idx| {
-            // Add repo header row
-            const repo_row = self.createRepoRow(repo.name, repo_idx);
-            list_box.append(repo_row.as(gtk.Widget));
+        if (priv.flat_view) {
+            // Flat view: show all worktrees without repo grouping
+            const wt_header = self.createSectionHeader("Worktrees");
+            list_box.append(wt_header.as(gtk.Widget));
 
-            if (repo.expanded) {
+            for (store.repositories.items, 0..) |repo, repo_idx| {
                 for (repo.worktrees.items, 0..) |wt, wt_idx| {
-                    // Add worktree row
                     const wt_row = self.createWorktreeRow(wt.branch, wt.path, wt.is_main, repo.path, repo_idx, wt_idx);
                     list_box.append(wt_row.as(gtk.Widget));
 
-                    // Add session rows
                     for (wt.sessions.items) |session| {
                         const session_row = self.createSessionRow(session);
                         list_box.append(session_row.as(gtk.Widget));
+                    }
+                }
+            }
+        } else {
+            // Nested view: group worktrees under repos
+            for (store.repositories.items, 0..) |repo, repo_idx| {
+                const repo_row = self.createRepoRow(repo.name, repo_idx);
+                list_box.append(repo_row.as(gtk.Widget));
+
+                if (repo.expanded) {
+                    for (repo.worktrees.items, 0..) |wt, wt_idx| {
+                        const wt_row = self.createWorktreeRow(wt.branch, wt.path, wt.is_main, repo.path, repo_idx, wt_idx);
+                        list_box.append(wt_row.as(gtk.Widget));
+
+                        for (wt.sessions.items) |session| {
+                            const session_row = self.createSessionRow(session);
+                            list_box.append(session_row.as(gtk.Widget));
+                        }
                     }
                 }
             }
@@ -549,6 +569,83 @@ pub const WorktrunkSidebar = extern struct {
         self.rebuildList();
     }
 
+    fn searchChanged(
+        search_entry: *gtk.SearchEntry,
+        self: *Self,
+    ) callconv(.c) void {
+        const priv = self.private();
+        const text = search_entry.as(gtk.Editable).getText();
+        const filter_text = std.mem.span(text);
+
+        if (filter_text.len == 0) {
+            // Clear filter — show all rows
+            priv.list_box.setFilterFunc(null, null, null);
+        } else {
+            // Apply filter
+            priv.list_box.setFilterFunc(&filterRow, self, null);
+        }
+        priv.list_box.invalidateFilter();
+    }
+
+    fn filterRow(row: *gtk.ListBoxRow, ud: ?*anyopaque) callconv(.c) c_int {
+        const self: *Self = @ptrCast(@alignCast(ud orelse return 1));
+        const priv = self.private();
+
+        // Get filter text
+        const text = priv.search_entry.as(gtk.Editable).getText();
+        const filter_text = std.mem.span(text);
+        if (filter_text.len == 0) return 1;
+
+        // Always show section headers
+        const name = row.as(gtk.Widget).getName();
+        const name_slice = std.mem.span(name);
+        if (std.mem.eql(u8, name_slice, "section-header")) return 1;
+
+        // Get the row's child widget tree and check if any label contains the filter text
+        // Simple approach: check the row name which contains identifiers
+        if (containsCaseInsensitive(name_slice, filter_text)) return 1;
+
+        // Also check visible label text by looking at the child widget
+        if (row.getChild()) |child| {
+            if (checkWidgetForText(child, filter_text)) return 1;
+        }
+
+        return 0; // hide
+    }
+
+    fn checkWidgetForText(widget: *gtk.Widget, filter: []const u8) bool {
+        // Check if this widget is a Label
+        if (gobject.ext.cast(gtk.Label, widget)) |label| {
+            const label_text = std.mem.span(label.getText());
+            if (containsCaseInsensitive(label_text, filter)) return true;
+        }
+
+        // Check if this widget is a Box and recurse into children
+        var child = widget.getFirstChild();
+        while (child) |c| {
+            if (checkWidgetForText(c, filter)) return true;
+            child = c.getNextSibling();
+        }
+        return false;
+    }
+
+    fn containsCaseInsensitive(haystack: []const u8, needle: []const u8) bool {
+        if (needle.len == 0) return true;
+        if (haystack.len < needle.len) return false;
+        var i: usize = 0;
+        while (i <= haystack.len - needle.len) : (i += 1) {
+            var match = true;
+            for (0..needle.len) |j| {
+                if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(needle[j])) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) return true;
+        }
+        return false;
+    }
+
     fn rowActivated(
         _: *gtk.ListBox,
         row: *gtk.ListBoxRow,
@@ -615,6 +712,7 @@ pub const WorktrunkSidebar = extern struct {
         const actions = [_]ext.actions.Action(Self){
             .init("sort-alpha", actionSortAlpha, null),
             .init("sort-recent", actionSortRecent, null),
+            .init("toggle-flat", actionToggleFlat, null),
             .init("remove-all", actionRemoveAll, null),
         };
 
@@ -665,6 +763,16 @@ pub const WorktrunkSidebar = extern struct {
                 }
             }.lessThan);
         }
+        self.rebuildList();
+    }
+
+    fn actionToggleFlat(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Self,
+    ) callconv(.c) void {
+        const priv = self.private();
+        priv.flat_view = !priv.flat_view;
         self.rebuildList();
     }
 
@@ -732,6 +840,7 @@ pub const WorktrunkSidebar = extern struct {
             class.bindTemplateChildPrivate("list_box", .{});
             class.bindTemplateChildPrivate("add_button", .{});
             class.bindTemplateChildPrivate("refresh_button", .{});
+            class.bindTemplateChildPrivate("search_entry", .{});
             class.bindTemplateChildPrivate("placeholder", .{});
             class.bindTemplateChildPrivate("header", .{});
 
@@ -739,6 +848,7 @@ pub const WorktrunkSidebar = extern struct {
             class.bindTemplateCallback("add_repository", &addRepository);
             class.bindTemplateCallback("refresh", &refresh);
             class.bindTemplateCallback("row_activated", &rowActivated);
+            class.bindTemplateCallback("search_changed", &searchChanged);
 
             // Properties
             gobject.ext.registerProperties(class, &.{

@@ -65,6 +65,14 @@ template $GhosttyWorktrunkSidebar: Adw.Bin {
       }
     }
 
+    Gtk.SearchEntry search_entry {
+      placeholder-text: _("Filter…");
+      search-changed => $search_changed();
+      margin-start: 8;
+      margin-end: 8;
+      margin-bottom: 4;
+    }
+
     Gtk.ScrolledWindow {
       hscrollbar-policy: never;
       vexpand: true;
@@ -134,6 +142,15 @@ menu sidebar_options_menu {
     item {
       label: _("Recent Activity");
       action: "sidebar.sort-recent";
+    }
+  }
+
+  section {
+    label: _("View");
+
+    item {
+      label: _("Flat Worktrees");
+      action: "sidebar.toggle-flat";
     }
   }
 
