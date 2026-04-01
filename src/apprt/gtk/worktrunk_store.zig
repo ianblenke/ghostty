@@ -81,22 +81,40 @@ const PersistedRepo = struct {
 };
 
 /// The worktrunk store manages all sidebar state.
+/// Cached session metadata to avoid re-parsing unchanged JSONL files.
+const SessionCacheEntry = struct {
+    mtime: i64,
+    size: u64,
+    message_count: u32,
+    cwd: []const u8,
+};
+
 pub const WorktrunkStore = struct {
     alloc: Allocator,
     repositories: std.ArrayListUnmanaged(Repository),
     wt_available: bool,
+    /// Session cache keyed by file path (project_name/session_filename)
+    session_cache: std.StringHashMapUnmanaged(SessionCacheEntry),
 
     pub fn init(alloc: Allocator) WorktrunkStore {
         return .{
             .alloc = alloc,
             .repositories = .{},
             .wt_available = wt_client.isAvailable(alloc),
+            .session_cache = .{},
         };
     }
 
     pub fn deinit(self: *WorktrunkStore) void {
         for (self.repositories.items) |*repo| repo.deinit(self.alloc);
         self.repositories.deinit(self.alloc);
+        // Free cache
+        var cache_iter = self.session_cache.iterator();
+        while (cache_iter.next()) |entry| {
+            self.alloc.free(entry.key_ptr.*);
+            self.alloc.free(entry.value_ptr.cwd);
+        }
+        self.session_cache.deinit(self.alloc);
     }
 
     /// Add a repository by path. Returns the index of the new repo.
@@ -246,13 +264,53 @@ pub const WorktrunkStore = struct {
         session_filename: []const u8,
         project_name: []const u8,
     ) !void {
-        _ = project_name;
-
         const file = try project_dir.openFile(session_filename, .{});
         defer file.close();
 
         const stat = try file.stat();
         if (stat.size == 0) return;
+
+        const file_mtime: i64 = @intCast(@divFloor(stat.mtime, std.time.ns_per_s));
+
+        // Build cache key: project_name/session_filename
+        var cache_key_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const cache_key = std.fmt.bufPrint(&cache_key_buf, "{s}/{s}", .{ project_name, session_filename }) catch return;
+
+        // Check cache — skip if file hasn't changed
+        if (self.session_cache.get(cache_key)) |cached| {
+            if (cached.mtime == file_mtime and cached.size == stat.size) {
+                // Use cached data
+                const session_id = if (std.mem.endsWith(u8, session_filename, ".jsonl"))
+                    session_filename[0 .. session_filename.len - 6]
+                else
+                    session_filename;
+
+                for (self.repositories.items) |*repo| {
+                    for (repo.worktrees.items) |*wt| {
+                        if (std.mem.startsWith(u8, cached.cwd, wt.path)) {
+                            const owned_id = try self.alloc.dupe(u8, session_id);
+                            errdefer self.alloc.free(owned_id);
+                            const owned_wt_path = try self.alloc.dupe(u8, wt.path);
+                            errdefer self.alloc.free(owned_wt_path);
+                            const owned_cwd = try self.alloc.dupe(u8, cached.cwd);
+
+                            try wt.sessions.append(self.alloc, .{
+                                .id = owned_id,
+                                .source = .claude,
+                                .worktree_path = owned_wt_path,
+                                .cwd = owned_cwd,
+                                .timestamp = file_mtime,
+                                .snippet = null,
+                                .message_count = cached.message_count,
+                                .status = .idle,
+                            });
+                            return;
+                        }
+                    }
+                }
+                return;
+            }
+        }
 
         // Read last few KB to find recent data
         const read_size: u64 = @min(stat.size, 8192);
@@ -293,6 +351,21 @@ pub const WorktrunkStore = struct {
 
         const session_cwd = cwd orelse return;
 
+        // Update cache
+        {
+            const owned_cache_key = try self.alloc.dupe(u8, cache_key);
+            const owned_cache_cwd = try self.alloc.dupe(u8, session_cwd);
+            if (self.session_cache.fetchPut(self.alloc, owned_cache_key, .{
+                .mtime = file_mtime,
+                .size = stat.size,
+                .message_count = message_count,
+                .cwd = owned_cache_cwd,
+            }) catch null) |old| {
+                self.alloc.free(old.key);
+                self.alloc.free(old.value.cwd);
+            }
+        }
+
         // Extract session ID from filename (strip .jsonl)
         const session_id = if (std.mem.endsWith(u8, session_filename, ".jsonl"))
             session_filename[0 .. session_filename.len - 6]
@@ -314,7 +387,7 @@ pub const WorktrunkStore = struct {
                         .source = .claude,
                         .worktree_path = owned_wt_path,
                         .cwd = owned_cwd,
-                        .timestamp = @intCast(@divFloor(stat.mtime, std.time.ns_per_s)),
+                        .timestamp = file_mtime,
                         .snippet = null,
                         .message_count = message_count,
                         .status = .idle,

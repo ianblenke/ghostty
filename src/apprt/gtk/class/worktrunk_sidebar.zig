@@ -11,6 +11,7 @@ const gresource = @import("../build/gresource.zig");
 const ext = @import("../ext.zig");
 const Common = @import("../class.zig").Common;
 const Application = @import("application.zig").Application;
+const Window = @import("window.zig").Window;
 const Config = @import("config.zig").Config;
 const worktrunk_store = @import("../worktrunk_store.zig");
 const WorktrunkStore = worktrunk_store.WorktrunkStore;
@@ -239,6 +240,25 @@ pub const WorktrunkSidebar = extern struct {
         list_box.as(gtk.Widget).setVisible(@intFromBool(has_items));
         priv.placeholder.as(gtk.Widget).setVisible(@intFromBool(!has_items));
 
+        // Active Tabs section
+        if (ext.getAncestor(Window, self.as(gtk.Widget))) |window| {
+            const tab_view = window.getTabView();
+            const n_pages = tab_view.getNPages();
+            if (n_pages > 0) {
+                // Section header
+                const tabs_header = self.createSectionHeader("Active Tabs");
+                list_box.append(tabs_header.as(gtk.Widget));
+
+                var i: c_int = 0;
+                while (i < n_pages) : (i += 1) {
+                    const page = tab_view.getNthPage(i);
+                    const title = page.getTitle();
+                    const tab_row = self.createTabRow(std.mem.span(title), i);
+                    list_box.append(tab_row.as(gtk.Widget));
+                }
+            }
+        }
+
         for (store.repositories.items, 0..) |repo, repo_idx| {
             // Add repo header row
             const repo_row = self.createRepoRow(repo.name, repo_idx);
@@ -427,6 +447,51 @@ pub const WorktrunkSidebar = extern struct {
         return row;
     }
 
+    fn createSectionHeader(_: *Self, title: []const u8) *gtk.ListBoxRow {
+        const label_z = glib.ext.dupeZ(u8, title);
+        const label = gtk.Label.new(label_z);
+        label.setXalign(0);
+        label.as(gtk.Widget).setMarginStart(8);
+        label.as(gtk.Widget).setMarginTop(8);
+        label.as(gtk.Widget).setMarginBottom(2);
+        label.as(gtk.Widget).addCssClass("dim-label");
+        label.as(gtk.Widget).addCssClass("caption");
+
+        const row = gtk.ListBoxRow.new();
+        row.setChild(label.as(gtk.Widget));
+        row.setActivatable(0);
+        row.setSelectable(0);
+        row.as(gtk.Widget).setName("section-header");
+        return row;
+    }
+
+    fn createTabRow(_: *Self, title: []const u8, tab_index: c_int) *gtk.ListBoxRow {
+        const box = gtk.Box.new(.horizontal, 8);
+        box.as(gtk.Widget).setMarginStart(8);
+        box.as(gtk.Widget).setMarginEnd(4);
+        box.as(gtk.Widget).setMarginTop(2);
+        box.as(gtk.Widget).setMarginBottom(2);
+
+        const icon = gtk.Image.newFromIconName("tab-new-symbolic");
+        box.append(icon.as(gtk.Widget));
+
+        const display = if (title.len > 0) title else "Terminal";
+        const title_z = glib.ext.dupeZ(u8, display);
+        const label = gtk.Label.new(title_z);
+        label.setXalign(0);
+        label.as(gtk.Widget).setHexpand(1);
+        box.append(label.as(gtk.Widget));
+
+        const row = gtk.ListBoxRow.new();
+        row.setChild(box.as(gtk.Widget));
+
+        var name_buf: [32]u8 = undefined;
+        const row_name = std.fmt.bufPrintZ(&name_buf, "tab:{d}", .{tab_index}) catch "tab:0";
+        row.as(gtk.Widget).setName(row_name);
+
+        return row;
+    }
+
     //---------------------------------------------------------------
     // Template Callbacks
 
@@ -531,6 +596,15 @@ pub const WorktrunkSidebar = extern struct {
             const id_z = glib.ext.dupeZ(u8, session_id);
             const path_z = glib.ext.dupeZ(u8, wt_path);
             signals.@"open-session".impl.emit(self, null, .{ id_z, path_z }, null);
+        } else if (std.mem.startsWith(u8, name_slice, "tab:")) {
+            // Switch to the clicked tab
+            const idx_str = name_slice["tab:".len..];
+            const tab_idx = std.fmt.parseInt(c_int, idx_str, 10) catch return;
+            if (ext.getAncestor(Window, self.as(gtk.Widget))) |window| {
+                const tab_view = window.getTabView();
+                const page = tab_view.getNthPage(tab_idx);
+                tab_view.setSelectedPage(page);
+            }
         }
     }
 

@@ -49,8 +49,11 @@ pub fn install(alloc: Allocator) !void {
     // Install claude-settings.json
     try installClaudeSettings(alloc, hooks_dir);
 
-    // Install claude wrapper
+    // Install agent wrappers
     try installClaudeWrapper(alloc, hooks_dir, bin_dir);
+    try installAgentWrapper(alloc, hooks_dir, bin_dir, "codex");
+    try installAgentWrapper(alloc, hooks_dir, bin_dir, "opencode");
+    try installAgentWrapper(alloc, hooks_dir, bin_dir, "copilot");
 }
 
 fn installNotifyScript(alloc: Allocator, hooks_dir: []const u8, events_dir: []const u8) !void {
@@ -179,6 +182,63 @@ fn installClaudeWrapper(alloc: Allocator, hooks_dir: []const u8, bin_dir: []cons
         \\fi
         \\exec "$REAL_BIN" --settings "{s}" "$@"
     , .{ wrapper_version, bin_dir, settings_path });
+    defer alloc.free(wrapper);
+
+    var file = try std.fs.createFileAbsolute(path, .{ .mode = 0o755 });
+    defer file.close();
+    try file.writeAll(wrapper);
+}
+
+/// Install a generic agent wrapper that emits Start/Stop events around the real binary.
+/// Used for codex, opencode, copilot which don't have Claude's hook system.
+fn installAgentWrapper(alloc: Allocator, hooks_dir: []const u8, bin_dir: []const u8, agent_name: []const u8) !void {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ bin_dir, agent_name });
+
+    var notify_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const notify_path = try std.fmt.bufPrint(&notify_buf, "{s}/notify.sh", .{hooks_dir});
+
+    const wrapper = try std.fmt.allocPrint(alloc,
+        \\#!/bin/bash
+        \\# Ghostree agent wrapper v{d} for {s}
+        \\for _d in "$HOME/.local/bin" "$HOME/.bun/bin" "$HOME/.cargo/bin" "/usr/local/bin"; do
+        \\  if [ -d "$_d" ]; then
+        \\    case ":$PATH:" in *":$_d:"*) ;; *) PATH="$_d:$PATH" ;; esac
+        \\  fi
+        \\done
+        \\
+        \\find_real_binary() {{
+        \\  local name="$1" IFS=:
+        \\  for dir in $PATH; do
+        \\    [ -z "$dir" ] && continue
+        \\    dir="${{dir%/}}"
+        \\    [ "$dir" = "{s}" ] && continue
+        \\    if [ -x "$dir/$name" ] && [ ! -d "$dir/$name" ]; then
+        \\      printf "%s\n" "$dir/$name"
+        \\      return 0
+        \\    fi
+        \\  done
+        \\  return 1
+        \\}}
+        \\
+        \\REAL_BIN="$(find_real_binary "{s}")"
+        \\if [ -z "$REAL_BIN" ]; then
+        \\  echo "Ghostree: {s} not found in PATH." >&2
+        \\  exit 127
+        \\fi
+        \\
+        \\# Emit Start event
+        \\echo '{{"hook_event_name":"Start"}}' | bash "{s}" 2>/dev/null
+        \\
+        \\# Run the real binary
+        \\"$REAL_BIN" "$@"
+        \\EXIT_CODE=$?
+        \\
+        \\# Emit Stop event
+        \\echo '{{"hook_event_name":"Stop"}}' | bash "{s}" 2>/dev/null
+        \\
+        \\exit $EXIT_CODE
+    , .{ wrapper_version, agent_name, bin_dir, agent_name, agent_name, notify_path, notify_path });
     defer alloc.free(wrapper);
 
     var file = try std.fs.createFileAbsolute(path, .{ .mode = 0o755 });
