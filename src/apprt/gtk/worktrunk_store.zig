@@ -322,6 +322,7 @@ pub const WorktrunkStore = struct {
         var last_line: ?[]const u8 = null;
         var cwd: ?[]const u8 = null;
         var message_count: u32 = 0;
+        var snippet: ?[]const u8 = null;
 
         var line_iter = std.mem.splitScalar(u8, content, '\n');
         while (line_iter.next()) |line| {
@@ -337,11 +338,18 @@ pub const WorktrunkStore = struct {
                     cwd = found_cwd;
                 }
             }
-            // Count user messages
+            // Count user messages and capture first snippet
             if (std.mem.indexOf(u8, line, "\"type\":\"user\"") != null or
                 std.mem.indexOf(u8, line, "\"type\": \"user\"") != null)
             {
                 message_count += 1;
+                // Capture first user message as snippet
+                if (snippet == null) {
+                    if (extractJsonString(line, "text")) |text| {
+                        const max_len = @min(text.len, 60);
+                        snippet = text[0..max_len];
+                    }
+                }
             }
         }
 
@@ -378,13 +386,15 @@ pub const WorktrunkStore = struct {
                     errdefer self.alloc.free(owned_wt_path);
                     const owned_cwd = try self.alloc.dupe(u8, session_cwd);
 
+                    const owned_snippet = if (snippet) |s| try self.alloc.dupe(u8, s) else null;
+
                     try wt.sessions.append(self.alloc, .{
                         .id = owned_id,
                         .source = agent_type,
                         .worktree_path = owned_wt_path,
                         .cwd = owned_cwd,
                         .timestamp = file_mtime,
-                        .snippet = null,
+                        .snippet = owned_snippet,
                         .message_count = message_count,
                         .status = .idle,
                     });

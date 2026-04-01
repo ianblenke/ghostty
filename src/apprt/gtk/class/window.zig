@@ -1569,6 +1569,8 @@ pub const Window = extern struct {
         if (tab.getSurfaceTree()) |tree| {
             self.connectSurfaceHandlers(tree);
         }
+
+        self.notifySidebarTabsChanged();
     }
 
     fn tabViewPageDetached(
@@ -1594,6 +1596,15 @@ pub const Window = extern struct {
         if (tab.getSurfaceTree()) |tree| {
             self.disconnectSurfaceHandlers(tree);
         }
+
+        self.notifySidebarTabsChanged();
+    }
+
+    /// Notify the sidebar that tabs have changed so it can refresh the active tabs section.
+    fn notifySidebarTabsChanged(self: *Self) void {
+        const priv = self.private();
+        const sidebar = priv.sidebar;
+        sidebar.refreshTabs();
     }
 
     fn tabViewCreateWindow(

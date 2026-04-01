@@ -230,6 +230,11 @@ pub const WorktrunkSidebar = extern struct {
     }
 
     /// Rebuild the ListBox contents from the store data.
+    /// Called by the Window when tabs are attached/detached to refresh the active tabs section.
+    pub fn refreshTabs(self: *Self) void {
+        self.rebuildList();
+    }
+
     fn rebuildList(self: *Self) void {
         const priv = self.private();
         const store = priv.store orelse return;
@@ -348,7 +353,7 @@ pub const WorktrunkSidebar = extern struct {
         return row;
     }
 
-    fn createWorktreeRow(self: *Self, branch: []const u8, _: []const u8, is_main: bool, repo_path: []const u8, repo_idx: usize, wt_idx: usize) *gtk.ListBoxRow {
+    fn createWorktreeRow(self: *Self, branch: []const u8, wt_path: []const u8, is_main: bool, repo_path: []const u8, repo_idx: usize, wt_idx: usize) *gtk.ListBoxRow {
         const box = gtk.Box.new(.horizontal, 8);
         box.as(gtk.Widget).setMarginStart(20);
         box.as(gtk.Widget).setMarginEnd(4);
@@ -409,6 +414,10 @@ pub const WorktrunkSidebar = extern struct {
         const row = gtk.ListBoxRow.new();
         row.setChild(box.as(gtk.Widget));
 
+        // Set tooltip to full worktree path
+        const path_z = glib.ext.dupeZ(u8, wt_path);
+        row.as(gtk.Widget).setTooltipText(path_z);
+
         var name_buf: [64]u8 = undefined;
         const row_name = std.fmt.bufPrintZ(&name_buf, "wt:{d}:{d}", .{ repo_idx, wt_idx }) catch "wt:0:0";
         row.as(gtk.Widget).setName(row_name);
@@ -438,29 +447,41 @@ pub const WorktrunkSidebar = extern struct {
         const icon = gtk.Image.newFromIconName("utilities-terminal-symbolic");
         box.append(icon.as(gtk.Widget));
 
-        // Session label
-        const display = session.source.displayName();
-        const display_z = glib.ext.dupeZ(u8, display);
-        const label = gtk.Label.new(display_z);
-        label.setXalign(0);
-        label.as(gtk.Widget).setHexpand(1);
-        label.as(gtk.Widget).addCssClass("dim-label");
-        label.as(gtk.Widget).addCssClass("caption");
-        box.append(label.as(gtk.Widget));
+        // Session info (vertical: agent name + snippet)
+        const info_box = gtk.Box.new(.vertical, 1);
+        info_box.as(gtk.Widget).setHexpand(1);
 
-        // Message count
-        var count_buf: [32]u8 = undefined;
-        const count_str = std.fmt.bufPrintZ(&count_buf, "{d} msgs", .{session.message_count}) catch "0 msgs";
-        const count_label = gtk.Label.new(count_str);
-        count_label.as(gtk.Widget).addCssClass("dim-label");
-        count_label.as(gtk.Widget).addCssClass("caption");
-        box.append(count_label.as(gtk.Widget));
+        // Agent name + message count
+        const alloc_tmp = Application.default().allocator();
+        var header_buf: [128]u8 = undefined;
+        const header_str = std.fmt.bufPrintZ(&header_buf, "{s} · {d} msgs", .{ session.source.displayName(), session.message_count }) catch "Session";
+        const header_label = gtk.Label.new(header_str);
+        header_label.setXalign(0);
+        header_label.as(gtk.Widget).addCssClass("caption");
+        info_box.append(header_label.as(gtk.Widget));
+
+        // Snippet preview (if available)
+        if (session.snippet) |snip| {
+            const snippet_z = glib.ext.dupeZ(u8, snip);
+            const snippet_label = gtk.Label.new(snippet_z);
+            snippet_label.setXalign(0);
+            snippet_label.as(gtk.Widget).addCssClass("dim-label");
+            snippet_label.as(gtk.Widget).addCssClass("caption");
+            info_box.append(snippet_label.as(gtk.Widget));
+        }
+        _ = alloc_tmp;
+
+        box.append(info_box.as(gtk.Widget));
 
         const row = gtk.ListBoxRow.new();
         row.setChild(box.as(gtk.Widget));
 
-        // Store session info in row name: "session:<id>:<worktree_path>"
+        // Tooltip: agent type + cwd + session ID
         const alloc = Application.default().allocator();
+        const tooltip = std.fmt.allocPrintSentinel(alloc, "{s} session in {s}", .{ session.source.displayName(), session.cwd }, 0) catch null;
+        if (tooltip) |t| row.as(gtk.Widget).setTooltipText(t);
+
+        // Store session info in row name: "session:<id>:<worktree_path>"
         const row_name = std.fmt.allocPrintSentinel(alloc, "session:{s}:{s}", .{ session.id, session.worktree_path }, 0) catch "session:unknown:unknown";
         row.as(gtk.Widget).setName(row_name);
 
