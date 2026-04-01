@@ -3621,8 +3621,13 @@ else
 @"gtk-wide-tabs": bool = true,
 
 /// If `true`, show the Ghostree worktrunk sidebar on the left side of the
-/// window. The sidebar provides navigation for git repositories, worktrees,
-/// and AI agent sessions. Default is `false`.
+/// window. The sidebar provides navigation for git repositories, worktrees
+/// (via the `wt` CLI), and AI agent sessions discovered within worktrees.
+///
+/// The sidebar can be toggled at runtime with the `toggle_worktrunk_sidebar`
+/// keybinding action.
+///
+/// Requires libadwaita (GTK only). Default is `false`.
 ///
 /// This is a Ghostree-specific feature and is not available in upstream
 /// Ghostty.

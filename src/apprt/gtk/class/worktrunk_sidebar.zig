@@ -101,6 +101,9 @@ pub const WorktrunkSidebar = extern struct {
         /// View mode: nested by repo (default) or flat worktrees.
         flat_view: bool = false,
 
+        /// Sort mode: false = alphabetical, true = recent first.
+        sort_recent: bool = false,
+
         /// Whether the store has been initialized.
         store_initialized: bool = false,
 
@@ -221,6 +224,13 @@ pub const WorktrunkSidebar = extern struct {
         store.scanClaudeSessions() catch |err| {
             log.warn("failed to scan claude sessions: {}", .{err});
         };
+
+        // Load persisted view preferences
+        {
+            const prefs = worktrunk_store.loadPreferences();
+            priv.flat_view = prefs.flat_view;
+            priv.sort_recent = std.mem.eql(u8, prefs.sort_mode, "recent");
+        }
 
         // Install agent hooks
         hook_installer.install(alloc) catch |err| {
@@ -817,6 +827,8 @@ pub const WorktrunkSidebar = extern struct {
         const priv = self.private();
         const store = priv.store orelse return;
 
+        priv.sort_recent = false;
+
         // Sort worktrees alphabetically within each repo
         for (store.repositories.items) |*repo| {
             std.mem.sort(worktrunk_store.Worktree, repo.worktrees.items, {}, struct {
@@ -825,6 +837,7 @@ pub const WorktrunkSidebar = extern struct {
                 }
             }.lessThan);
         }
+        self.saveCurrentPreferences();
         self.rebuildList();
     }
 
@@ -834,9 +847,19 @@ pub const WorktrunkSidebar = extern struct {
         self: *Self,
     ) callconv(.c) void {
         const priv = self.private();
+        if (priv.store == null) return;
+
+        priv.sort_recent = true;
+        self.applySortRecent();
+        self.saveCurrentPreferences();
+        self.rebuildList();
+    }
+
+    /// Apply recent-first sort to all repositories' worktrees.
+    fn applySortRecent(self: *Self) void {
+        const priv = self.private();
         const store = priv.store orelse return;
 
-        // Sort worktrees with main pinned first, then by session recency
         for (store.repositories.items) |*repo| {
             std.mem.sort(worktrunk_store.Worktree, repo.worktrees.items, {}, struct {
                 fn lessThan(_: void, a: worktrunk_store.Worktree, b: worktrunk_store.Worktree) bool {
@@ -853,7 +876,6 @@ pub const WorktrunkSidebar = extern struct {
                 }
             }.lessThan);
         }
-        self.rebuildList();
     }
 
     fn actionToggleFlat(
@@ -863,7 +885,19 @@ pub const WorktrunkSidebar = extern struct {
     ) callconv(.c) void {
         const priv = self.private();
         priv.flat_view = !priv.flat_view;
+        self.saveCurrentPreferences();
         self.rebuildList();
+    }
+
+    /// Persist the current sort mode and flat view preferences to disk.
+    fn saveCurrentPreferences(self: *Self) void {
+        const priv = self.private();
+        worktrunk_store.savePreferences(.{
+            .sort_mode = if (priv.sort_recent) "recent" else "alpha",
+            .flat_view = priv.flat_view,
+        }) catch |err| {
+            log.warn("failed to save preferences: {}", .{err});
+        };
     }
 
     fn actionRemoveAll(

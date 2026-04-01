@@ -32,10 +32,17 @@ pub fn install(alloc: Allocator) !void {
     const events_dir = try getEventsDir(alloc);
     defer alloc.free(events_dir);
 
-    // Ensure directories exist
+    // Ensure directories exist (create parents as needed)
     inline for (.{ hooks_dir, bin_dir, events_dir }) |dir| {
         std.fs.makeDirAbsolute(dir) catch |err| switch (err) {
             error.PathAlreadyExists => {},
+            error.FileNotFound => {
+                // Parent doesn't exist, create the full path
+                std.fs.cwd().makePath(dir) catch |err2| {
+                    log.warn("failed to create dir {s}: {}", .{ dir, err2 });
+                    return;
+                };
+            },
             else => {
                 log.warn("failed to create dir {s}: {}", .{ dir, err });
                 return;

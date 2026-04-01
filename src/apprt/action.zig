@@ -117,7 +117,9 @@ pub const Action = union(Key) {
     /// Toggle the command palette.
     toggle_command_palette,
 
-    /// Toggle the worktrunk sidebar.
+    /// Toggle the Ghostree worktrunk sidebar, which provides navigation
+    /// for git repositories, worktrees, and AI agent sessions. Requires
+    /// `gtk-worktrunk-sidebar = true` in the configuration.
     toggle_worktrunk_sidebar,
 
     /// Toggle the visibility of all Ghostty terminal windows.
