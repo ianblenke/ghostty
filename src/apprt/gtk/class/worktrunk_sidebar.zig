@@ -212,6 +212,8 @@ pub const WorktrunkSidebar = extern struct {
             self.rebuildList();
             return 0;
         };
+        tailer.on_status_change = &onAgentStatusChange;
+        tailer.on_status_change_data = self;
         tailer.start();
         priv.event_tailer = tailer;
 
@@ -230,6 +232,12 @@ pub const WorktrunkSidebar = extern struct {
     }
 
     /// Rebuild the ListBox contents from the store data.
+    /// Called by the event tailer when agent session status changes.
+    fn onAgentStatusChange(ud: ?*anyopaque) void {
+        const self: *Self = @ptrCast(@alignCast(ud orelse return));
+        self.rebuildList();
+    }
+
     /// Called by the Window when tabs are attached/detached to refresh the active tabs section.
     pub fn refreshTabs(self: *Self) void {
         self.rebuildList();

@@ -61,7 +61,8 @@ pub const EventTailer = struct {
     last_offset: u64,
     timer_id: ?c_uint,
     store: *worktrunk_store.WorktrunkStore,
-    on_status_change: ?*const fn () void,
+    on_status_change: ?*const fn (?*anyopaque) void,
+    on_status_change_data: ?*anyopaque,
 
     pub fn init(alloc: Allocator, store: *worktrunk_store.WorktrunkStore) !EventTailer {
         const events_dir = try hook_installer.getEventsDir(alloc);
@@ -84,6 +85,7 @@ pub const EventTailer = struct {
             .timer_id = null,
             .store = store,
             .on_status_change = null,
+            .on_status_change_data = null,
         };
     }
 
@@ -142,7 +144,7 @@ pub const EventTailer = struct {
         }
 
         if (changed) {
-            if (self.on_status_change) |cb| cb();
+            if (self.on_status_change) |cb| cb(self.on_status_change_data);
         }
     }
 
