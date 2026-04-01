@@ -106,7 +106,11 @@ pub const WorktrunkStore = struct {
     }
 
     pub fn deinit(self: *WorktrunkStore) void {
-        for (self.repositories.items) |*repo| repo.deinit(self.alloc);
+        for (self.repositories.items) |*repo| {
+            self.alloc.free(repo.path);
+            self.alloc.free(repo.name);
+            repo.deinit(self.alloc);
+        }
         self.repositories.deinit(self.alloc);
         // Free cache
         var cache_iter = self.session_cache.iterator();
@@ -365,7 +369,8 @@ pub const WorktrunkStore = struct {
                 .message_count = message_count,
                 .cwd = owned_cache_cwd,
             }) catch null) |old| {
-                self.alloc.free(old.key);
+                // fetchPut keeps the existing key, so free the new one we just allocated
+                self.alloc.free(owned_cache_key);
                 self.alloc.free(old.value.cwd);
             }
         }
@@ -585,4 +590,158 @@ fn getConfigDir(alloc: Allocator) ![]const u8 {
 /// Get the XDG cache directory for ghostree.
 pub fn getCacheDir(alloc: Allocator) ![]const u8 {
     return try internal_os.xdg.cache(alloc, .{ .subdir = "ghostree" });
+}
+
+// ---------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------
+
+test "extractJsonString: basic key-value" {
+    const result = extractJsonString("{\"cwd\": \"/foo/bar\", \"type\": \"user\"}", "cwd");
+    try std.testing.expectEqualStrings("/foo/bar", result.?);
+}
+
+test "extractJsonString: no space after colon" {
+    const result = extractJsonString("{\"cwd\":\"/foo/bar\"}", "cwd");
+    try std.testing.expectEqualStrings("/foo/bar", result.?);
+}
+
+test "extractJsonString: key at different positions" {
+    const line = "{\"type\": \"user\", \"cwd\": \"/home/test\", \"id\": \"123\"}";
+    try std.testing.expectEqualStrings("/home/test", extractJsonString(line, "cwd").?);
+    try std.testing.expectEqualStrings("user", extractJsonString(line, "type").?);
+    try std.testing.expectEqualStrings("123", extractJsonString(line, "id").?);
+}
+
+test "extractJsonString: missing key returns null" {
+    try std.testing.expect(extractJsonString("{\"cwd\": \"/foo\"}", "missing") == null);
+}
+
+test "extractJsonString: empty value" {
+    try std.testing.expectEqualStrings("", extractJsonString("{\"cwd\": \"\"}", "cwd").?);
+}
+
+test "extractJsonString: value with path separators" {
+    const result = extractJsonString("{\"cwd\": \"/home/user/projects/my-repo/.claude/worktrees/feature\"}", "cwd");
+    try std.testing.expectEqualStrings("/home/user/projects/my-repo/.claude/worktrees/feature", result.?);
+}
+
+test "extractJsonString: extra whitespace around colon" {
+    try std.testing.expectEqualStrings("/foo", extractJsonString("{\"cwd\":   \"/foo\"}", "cwd").?);
+}
+
+test "extractJsonString: non-string value returns null" {
+    try std.testing.expect(extractJsonString("{\"count\": 42}", "count") == null);
+}
+
+test "extractJsonString: text field for snippet extraction" {
+    const result = extractJsonString("{\"type\": \"user\", \"text\": \"Fix the build error\"}", "text");
+    try std.testing.expectEqualStrings("Fix the build error", result.?);
+}
+
+test "AgentType.displayName: all variants" {
+    try std.testing.expectEqualStrings("Claude", AgentType.claude.displayName());
+    try std.testing.expectEqualStrings("Codex", AgentType.codex.displayName());
+    try std.testing.expectEqualStrings("OpenCode", AgentType.opencode.displayName());
+    try std.testing.expectEqualStrings("Copilot", AgentType.copilot.displayName());
+}
+
+test "WorktrunkStore: init and deinit" {
+    var store = WorktrunkStore.init(std.testing.allocator);
+    defer store.deinit();
+    try std.testing.expectEqual(@as(usize, 0), store.repositories.items.len);
+}
+
+test "WorktrunkStore: addRepository" {
+    var store = WorktrunkStore.init(std.testing.allocator);
+    defer store.deinit();
+    const idx = try store.addRepository("/home/user/my-project");
+    try std.testing.expectEqual(@as(usize, 0), idx);
+    try std.testing.expectEqualStrings("my-project", store.repositories.items[0].name);
+    try std.testing.expect(store.repositories.items[0].expanded);
+}
+
+test "WorktrunkStore: addRepository duplicate" {
+    var store = WorktrunkStore.init(std.testing.allocator);
+    defer store.deinit();
+    _ = try store.addRepository("/home/user/project");
+    try std.testing.expectError(error.AlreadyExists, store.addRepository("/home/user/project"));
+}
+
+test "WorktrunkStore: addRepository multiple" {
+    var store = WorktrunkStore.init(std.testing.allocator);
+    defer store.deinit();
+    try std.testing.expectEqual(@as(usize, 0), try store.addRepository("/a"));
+    try std.testing.expectEqual(@as(usize, 1), try store.addRepository("/b"));
+    try std.testing.expectEqual(@as(usize, 2), try store.addRepository("/c"));
+    try std.testing.expectEqual(@as(usize, 3), store.repositories.items.len);
+}
+
+test "WorktrunkStore: removeRepository" {
+    var store = WorktrunkStore.init(std.testing.allocator);
+    defer store.deinit();
+    _ = try store.addRepository("/a");
+    _ = try store.addRepository("/b");
+    _ = try store.addRepository("/c");
+    store.removeRepository(1);
+    try std.testing.expectEqual(@as(usize, 2), store.repositories.items.len);
+    try std.testing.expectEqualStrings("/a", store.repositories.items[0].path);
+    try std.testing.expectEqualStrings("/c", store.repositories.items[1].path);
+}
+
+test "WorktrunkStore: removeRepository out of bounds" {
+    var store = WorktrunkStore.init(std.testing.allocator);
+    defer store.deinit();
+    _ = try store.addRepository("/a");
+    store.removeRepository(5);
+    try std.testing.expectEqual(@as(usize, 1), store.repositories.items.len);
+}
+
+test "WorktrunkStore: totalDisplayItems empty" {
+    var store = WorktrunkStore.init(std.testing.allocator);
+    defer store.deinit();
+    try std.testing.expectEqual(@as(usize, 0), store.totalDisplayItems());
+}
+
+test "WorktrunkStore: totalDisplayItems with repos" {
+    var store = WorktrunkStore.init(std.testing.allocator);
+    defer store.deinit();
+    _ = try store.addRepository("/a");
+    _ = try store.addRepository("/b");
+    try std.testing.expectEqual(@as(usize, 2), store.totalDisplayItems());
+}
+
+test "WorktrunkStore: getDisplayRow repos only" {
+    var store = WorktrunkStore.init(std.testing.allocator);
+    defer store.deinit();
+    _ = try store.addRepository("/a");
+    _ = try store.addRepository("/b");
+    try std.testing.expectEqual(WorktrunkStore.RowKind.repo, store.getDisplayRow(0).?.kind);
+    try std.testing.expectEqual(WorktrunkStore.RowKind.repo, store.getDisplayRow(1).?.kind);
+    try std.testing.expect(store.getDisplayRow(2) == null);
+}
+
+test "WorktrunkStore: session cache insert and lookup" {
+    const alloc = std.testing.allocator;
+    var store = WorktrunkStore.init(alloc);
+    defer store.deinit();
+    const key = try alloc.dupe(u8, "project/session1.jsonl");
+    const cwd = try alloc.dupe(u8, "/home/user/project");
+    try store.session_cache.put(alloc, key, .{ .mtime = 1234567890, .size = 4096, .message_count = 5, .cwd = cwd });
+    const entry = store.session_cache.get("project/session1.jsonl");
+    try std.testing.expectEqual(@as(i64, 1234567890), entry.?.mtime);
+    try std.testing.expectEqual(@as(u32, 5), entry.?.message_count);
+}
+
+test "WorktrunkStore: session cache miss" {
+    var store = WorktrunkStore.init(std.testing.allocator);
+    defer store.deinit();
+    try std.testing.expect(store.session_cache.get("nonexistent") == null);
+}
+
+test "WorktrunkStore: basename extraction for repo name" {
+    var store = WorktrunkStore.init(std.testing.allocator);
+    defer store.deinit();
+    _ = try store.addRepository("/home/user/deeply/nested/my-repo");
+    try std.testing.expectEqualStrings("my-repo", store.repositories.items[0].name);
 }
