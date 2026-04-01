@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const adw = @import("adw");
+const gdk = @import("gdk");
 const glib = @import("glib");
 const gobject = @import("gobject");
 const gtk = @import("gtk");
@@ -13,6 +14,7 @@ const Common = @import("../class.zig").Common;
 const Application = @import("application.zig").Application;
 const Window = @import("window.zig").Window;
 const Config = @import("config.zig").Config;
+const wt_client = @import("../worktrunk_client.zig");
 const worktrunk_store = @import("../worktrunk_store.zig");
 const WorktrunkStore = worktrunk_store.WorktrunkStore;
 const AgentSession = worktrunk_store.AgentSession;
@@ -91,6 +93,11 @@ pub const WorktrunkSidebar = extern struct {
         /// GitHub PR status manager.
         github_mgr: ?*GitHubStatusManager = null,
 
+        /// Context menu state: which repo/worktree was right-clicked.
+        context_repo_idx: ?usize = null,
+        context_wt_idx: ?usize = null,
+        context_popover: ?*gtk.PopoverMenu = null,
+
         /// View mode: nested by repo (default) or flat worktrees.
         flat_view: bool = false,
 
@@ -117,8 +124,23 @@ pub const WorktrunkSidebar = extern struct {
         priv.list_box.as(gtk.Widget).setVisible(0);
         priv.placeholder.as(gtk.Widget).setVisible(1);
 
-        // Register sidebar actions for the options menu
+        // Register sidebar actions for the options menu and context menu
         self.initActionMap();
+
+        // Create the context menu popover for right-click on rows
+        self.setupContextMenu();
+
+        // Add a right-click gesture to the list box
+        const gesture = gtk.GestureClick.new();
+        gesture.as(gtk.GestureSingle).setButton(3);
+        _ = gtk.GestureClick.signals.pressed.connect(
+            gesture,
+            *Self,
+            &gcRowRightClick,
+            self,
+            .{},
+        );
+        priv.list_box.as(gtk.Widget).addController(gesture.as(gtk.EventController));
 
         // Initialize store on the next idle tick to avoid blocking init
         _ = glib.idleAdd(onInitStore, self);
@@ -126,6 +148,11 @@ pub const WorktrunkSidebar = extern struct {
 
     fn dispose(self: *Self) callconv(.c) void {
         const priv = self.private();
+
+        if (priv.context_popover) |popover| {
+            popover.as(gtk.Widget).unparent();
+            priv.context_popover = null;
+        }
 
         if (priv.github_mgr) |mgr| {
             mgr.deinit();
@@ -270,7 +297,7 @@ pub const WorktrunkSidebar = extern struct {
                 while (i < n_pages) : (i += 1) {
                     const page = tab_view.getNthPage(i);
                     const title = page.getTitle();
-                    const tab_row = self.createTabRow(std.mem.span(title), i);
+                    const tab_row = self.createTabRow(std.mem.span(title), i, n_pages);
                     list_box.append(tab_row.as(gtk.Widget));
                 }
             }
@@ -514,8 +541,8 @@ pub const WorktrunkSidebar = extern struct {
         return row;
     }
 
-    fn createTabRow(_: *Self, title: []const u8, tab_index: c_int) *gtk.ListBoxRow {
-        const box = gtk.Box.new(.horizontal, 8);
+    fn createTabRow(_: *Self, title: []const u8, tab_index: c_int, n_pages: c_int) *gtk.ListBoxRow {
+        const box = gtk.Box.new(.horizontal, 4);
         box.as(gtk.Widget).setMarginStart(8);
         box.as(gtk.Widget).setMarginEnd(4);
         box.as(gtk.Widget).setMarginTop(2);
@@ -530,6 +557,34 @@ pub const WorktrunkSidebar = extern struct {
         label.setXalign(0);
         label.as(gtk.Widget).setHexpand(1);
         box.append(label.as(gtk.Widget));
+
+        // Move Up button (visible when not the first tab)
+        if (n_pages > 1) {
+            const up_btn = gtk.Button.newFromIconName("go-up-symbolic");
+            up_btn.as(gtk.Widget).addCssClass("flat");
+            up_btn.as(gtk.Widget).addCssClass("circular");
+            up_btn.as(gtk.Widget).setTooltipText("Move tab up");
+            up_btn.as(gtk.Widget).setFocusable(0);
+            up_btn.as(gtk.Actionable).setActionName("sidebar.move-tab-up");
+            up_btn.as(gtk.Actionable).setActionTargetValue(glib.Variant.newInt32(tab_index));
+            if (tab_index == 0) {
+                up_btn.as(gtk.Widget).setSensitive(0);
+            }
+            box.append(up_btn.as(gtk.Widget));
+
+            // Move Down button (visible when not the last tab)
+            const down_btn = gtk.Button.newFromIconName("go-down-symbolic");
+            down_btn.as(gtk.Widget).addCssClass("flat");
+            down_btn.as(gtk.Widget).addCssClass("circular");
+            down_btn.as(gtk.Widget).setTooltipText("Move tab down");
+            down_btn.as(gtk.Widget).setFocusable(0);
+            down_btn.as(gtk.Actionable).setActionName("sidebar.move-tab-down");
+            down_btn.as(gtk.Actionable).setActionTargetValue(glib.Variant.newInt32(tab_index));
+            if (tab_index >= n_pages - 1) {
+                down_btn.as(gtk.Widget).setSensitive(0);
+            }
+            box.append(down_btn.as(gtk.Widget));
+        }
 
         const row = gtk.ListBoxRow.new();
         row.setChild(box.as(gtk.Widget));
@@ -738,11 +793,17 @@ pub const WorktrunkSidebar = extern struct {
     // Action Map
 
     fn initActionMap(self: *Self) void {
+        const i32_variant_type = comptime glib.ext.VariantType.newFor(i32);
         const actions = [_]ext.actions.Action(Self){
             .init("sort-alpha", actionSortAlpha, null),
             .init("sort-recent", actionSortRecent, null),
             .init("toggle-flat", actionToggleFlat, null),
             .init("remove-all", actionRemoveAll, null),
+            .init("new-worktree", actionNewWorktree, null),
+            .init("delete-worktree", actionDeleteWorktree, null),
+            .init("open-in-terminal", actionOpenInTerminal, null),
+            .init("move-tab-up", actionMoveTabUp, i32_variant_type),
+            .init("move-tab-down", actionMoveTabDown, i32_variant_type),
         };
 
         _ = ext.actions.addAsGroup(Self, self, "sidebar", &actions);
@@ -819,6 +880,244 @@ pub const WorktrunkSidebar = extern struct {
         }
         store.persist() catch {};
         self.rebuildList();
+    }
+
+    fn actionMoveTabUp(
+        _: *gio.SimpleAction,
+        variant: ?*glib.Variant,
+        self: *Self,
+    ) callconv(.c) void {
+        const tab_idx = if (variant) |v| v.getInt32() else return;
+        if (tab_idx <= 0) return;
+        self.reorderTab(tab_idx, tab_idx - 1);
+    }
+
+    fn actionMoveTabDown(
+        _: *gio.SimpleAction,
+        variant: ?*glib.Variant,
+        self: *Self,
+    ) callconv(.c) void {
+        const tab_idx = if (variant) |v| v.getInt32() else return;
+        self.reorderTab(tab_idx, tab_idx + 1);
+    }
+
+    fn reorderTab(self: *Self, from: c_int, to: c_int) void {
+        const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
+        const tab_view = window.getTabView();
+        const n_pages = tab_view.getNPages();
+        if (from < 0 or from >= n_pages) return;
+        if (to < 0 or to >= n_pages) return;
+        const page = tab_view.getNthPage(from);
+        _ = tab_view.reorderPage(page, to);
+        self.rebuildList();
+    }
+
+    //---------------------------------------------------------------
+    // Context Menu
+
+    fn setupContextMenu(self: *Self) void {
+        const priv = self.private();
+        const menu = gio.Menu.new();
+        menu.appendItem(gio.MenuItem.new("New Worktree\u{2026}", "sidebar.new-worktree"));
+        menu.appendItem(gio.MenuItem.new("Delete Worktree", "sidebar.delete-worktree"));
+        menu.appendItem(gio.MenuItem.new("Open in Terminal", "sidebar.open-in-terminal"));
+
+        const popover = gtk.PopoverMenu.newFromModel(menu.as(gio.MenuModel));
+        popover.as(gtk.Popover).setHasArrow(0);
+        popover.as(gtk.Widget).setParent(priv.list_box.as(gtk.Widget));
+        priv.context_popover = popover;
+    }
+
+    fn gcRowRightClick(
+        _: *gtk.GestureClick,
+        _: c_int,
+        x: f64,
+        y: f64,
+        self: *Self,
+    ) callconv(.c) void {
+        const priv = self.private();
+        const store = priv.store orelse return;
+        const popover = priv.context_popover orelse return;
+
+        const row = priv.list_box.getRowAtY(@intFromFloat(y)) orelse return;
+        const name = row.as(gtk.Widget).getName();
+        const name_slice = std.mem.span(name);
+
+        if (std.mem.startsWith(u8, name_slice, "wt:")) {
+            const rest = name_slice["wt:".len..];
+            var iter = std.mem.splitScalar(u8, rest, ':');
+            const repo_idx = std.fmt.parseInt(usize, iter.next() orelse return, 10) catch return;
+            const wt_idx = std.fmt.parseInt(usize, iter.next() orelse return, 10) catch return;
+            if (repo_idx >= store.repositories.items.len) return;
+            priv.context_repo_idx = repo_idx;
+            priv.context_wt_idx = wt_idx;
+        } else if (std.mem.startsWith(u8, name_slice, "repo:")) {
+            const repo_idx = std.fmt.parseInt(usize, name_slice["repo:".len..], 10) catch return;
+            if (repo_idx >= store.repositories.items.len) return;
+            priv.context_repo_idx = repo_idx;
+            priv.context_wt_idx = null;
+        } else {
+            return;
+        }
+
+        const rect: gdk.Rectangle = .{
+            .f_x = @intFromFloat(x),
+            .f_y = @intFromFloat(y),
+            .f_width = 1,
+            .f_height = 1,
+        };
+        popover.as(gtk.Popover).setPointingTo(&rect);
+        popover.as(gtk.Popover).popup();
+    }
+
+    fn actionNewWorktree(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Self,
+    ) callconv(.c) void {
+        const priv = self.private();
+        const repo_idx = priv.context_repo_idx orelse return;
+        const store = priv.store orelse return;
+        if (repo_idx >= store.repositories.items.len) return;
+
+        const dialog = adw.AlertDialog.new("New Worktree", "Enter a branch name for the new worktree:");
+        dialog.addResponse("cancel", "Cancel");
+        dialog.addResponse("create", "Create");
+        dialog.setResponseAppearance("create", .suggested);
+        dialog.setDefaultResponse("create");
+
+        const entry = gtk.Entry.new();
+        entry.as(gtk.Widget).setMarginStart(24);
+        entry.as(gtk.Widget).setMarginEnd(24);
+        entry.setPlaceholderText("feature/my-branch");
+        entry.setActivatesDefault(1);
+        dialog.setExtraChild(entry.as(gtk.Widget));
+
+        const parent: *gtk.Widget = if (ext.getAncestor(
+            adw.ApplicationWindow,
+            self.as(gtk.Widget),
+        )) |window|
+            window.as(gtk.Widget)
+        else
+            self.as(gtk.Widget);
+
+        dialog.choose(parent, null, &onNewWorktreeResponse, self);
+    }
+
+    fn onNewWorktreeResponse(
+        source: ?*gobject.Object,
+        result: *gio.AsyncResult,
+        ud: ?*anyopaque,
+    ) callconv(.c) void {
+        const self: *Self = @ptrCast(@alignCast(ud orelse return));
+        const priv = self.private();
+        const dialog: *adw.AlertDialog = @ptrCast(@alignCast(source orelse return));
+        const response = dialog.chooseFinish(result);
+
+        if (std.mem.orderZ(u8, "create", response) != .eq) return;
+
+        const extra_child = dialog.getExtraChild() orelse return;
+        const entry = gobject.ext.cast(gtk.Entry, extra_child) orelse return;
+        const branch_text = std.mem.span(entry.getBuffer().getText());
+        if (branch_text.len == 0) return;
+
+        const repo_idx = priv.context_repo_idx orelse return;
+        const store = priv.store orelse return;
+        if (repo_idx >= store.repositories.items.len) return;
+        const repo_path = store.repositories.items[repo_idx].path;
+
+        const alloc = Application.default().allocator();
+        wt_client.addWorktree(alloc, repo_path, branch_text) catch |err| {
+            log.warn("failed to create worktree '{s}': {}", .{ branch_text, err });
+            return;
+        };
+
+        store.refreshAll();
+        store.scanClaudeSessions() catch {};
+        self.rebuildList();
+    }
+
+    fn actionDeleteWorktree(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Self,
+    ) callconv(.c) void {
+        const priv = self.private();
+        const repo_idx = priv.context_repo_idx orelse return;
+        const wt_idx = priv.context_wt_idx orelse return;
+        const store = priv.store orelse return;
+        if (repo_idx >= store.repositories.items.len) return;
+        const repo = store.repositories.items[repo_idx];
+        if (wt_idx >= repo.worktrees.items.len) return;
+        const wt = repo.worktrees.items[wt_idx];
+
+        if (wt.is_main) return;
+
+        const dialog = adw.AlertDialog.new("Delete Worktree?", "This will remove the worktree directory. Uncommitted changes will be lost.");
+        dialog.addResponse("cancel", "Cancel");
+        dialog.addResponse("delete", "Delete");
+        dialog.setResponseAppearance("delete", .destructive);
+        dialog.setDefaultResponse("cancel");
+
+        const parent: *gtk.Widget = if (ext.getAncestor(
+            adw.ApplicationWindow,
+            self.as(gtk.Widget),
+        )) |window|
+            window.as(gtk.Widget)
+        else
+            self.as(gtk.Widget);
+
+        dialog.choose(parent, null, &onDeleteWorktreeResponse, self);
+    }
+
+    fn onDeleteWorktreeResponse(
+        source: ?*gobject.Object,
+        result: *gio.AsyncResult,
+        ud: ?*anyopaque,
+    ) callconv(.c) void {
+        const self: *Self = @ptrCast(@alignCast(ud orelse return));
+        const priv = self.private();
+        const dialog: *adw.AlertDialog = @ptrCast(@alignCast(source orelse return));
+        const response = dialog.chooseFinish(result);
+
+        if (std.mem.orderZ(u8, "delete", response) != .eq) return;
+
+        const repo_idx = priv.context_repo_idx orelse return;
+        const wt_idx = priv.context_wt_idx orelse return;
+        const store = priv.store orelse return;
+        if (repo_idx >= store.repositories.items.len) return;
+        const repo = store.repositories.items[repo_idx];
+        if (wt_idx >= repo.worktrees.items.len) return;
+
+        const alloc = Application.default().allocator();
+        wt_client.removeWorktree(alloc, repo.worktrees.items[wt_idx].path) catch |err| {
+            log.warn("failed to delete worktree: {}", .{err});
+            return;
+        };
+
+        store.refreshAll();
+        self.rebuildList();
+    }
+
+    fn actionOpenInTerminal(
+        _: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Self,
+    ) callconv(.c) void {
+        const priv = self.private();
+        const repo_idx = priv.context_repo_idx orelse return;
+        const store = priv.store orelse return;
+        if (repo_idx >= store.repositories.items.len) return;
+        const repo = store.repositories.items[repo_idx];
+
+        _ = if (priv.context_wt_idx) |wt_idx| blk: {
+            if (wt_idx < repo.worktrees.items.len) break :blk repo.worktrees.items[wt_idx].path;
+            break :blk repo.path;
+        } else repo.path;
+
+        // Open a new tab in the current window
+        const window = ext.getAncestor(Window, self.as(gtk.Widget)) orelse return;
+        window.newTab(null);
     }
 
     //---------------------------------------------------------------

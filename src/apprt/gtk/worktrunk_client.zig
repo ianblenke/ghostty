@@ -106,6 +106,74 @@ pub fn listWorktrees(alloc: Allocator, repo_path: []const u8) !ListResult {
     };
 }
 
+/// Create a new worktree in the given repository for the specified branch.
+pub fn addWorktree(alloc: Allocator, repo_path: []const u8, branch: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    const wt_bin = try findWtBinary(arena_alloc);
+
+    var child = std.process.Child.init(
+        &.{ wt_bin, "-C", repo_path, "add", branch },
+        arena_alloc,
+    );
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    try child.spawn();
+
+    var stdout: std.ArrayListUnmanaged(u8) = .{};
+    var stderr: std.ArrayListUnmanaged(u8) = .{};
+    try child.collectOutput(arena_alloc, &stdout, &stderr, 1024 * 1024);
+    const term = try child.wait();
+
+    switch (term) {
+        .Exited => |rc| {
+            if (rc != 0) {
+                if (stderr.items.len > 0) {
+                    log.warn("wt add failed (rc={d}): {s}", .{ rc, stderr.items });
+                }
+                return error.WtAddFailed;
+            }
+        },
+        else => return error.WtAddFailed,
+    }
+}
+
+/// Remove a worktree at the given path.
+pub fn removeWorktree(alloc: Allocator, path: []const u8) !void {
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    const wt_bin = try findWtBinary(arena_alloc);
+
+    var child = std.process.Child.init(
+        &.{ wt_bin, "remove", path },
+        arena_alloc,
+    );
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    try child.spawn();
+
+    var stdout: std.ArrayListUnmanaged(u8) = .{};
+    var stderr: std.ArrayListUnmanaged(u8) = .{};
+    try child.collectOutput(arena_alloc, &stdout, &stderr, 1024 * 1024);
+    const term = try child.wait();
+
+    switch (term) {
+        .Exited => |rc| {
+            if (rc != 0) {
+                if (stderr.items.len > 0) {
+                    log.warn("wt remove failed (rc={d}): {s}", .{ rc, stderr.items });
+                }
+                return error.WtRemoveFailed;
+            }
+        },
+        else => return error.WtRemoveFailed,
+    }
+}
+
 /// Check if the `wt` binary is available on this system.
 pub fn isAvailable(alloc: Allocator) bool {
     const wt_bin = findWtBinary(alloc) catch return false;
