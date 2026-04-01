@@ -793,7 +793,7 @@ pub const WorktrunkSidebar = extern struct {
     // Action Map
 
     fn initActionMap(self: *Self) void {
-        const i32_variant_type = comptime glib.ext.VariantType.newFor(i32);
+        const i32_variant_type = glib.ext.VariantType.newFor(i32);
         const actions = [_]ext.actions.Action(Self){
             .init("sort-alpha", actionSortAlpha, null),
             .init("sort-recent", actionSortRecent, null),
